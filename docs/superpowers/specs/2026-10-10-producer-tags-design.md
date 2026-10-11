@@ -1,7 +1,7 @@
 # Producer Tags: Design
 
 **Date:** 2026-10-10
-**Status:** Draft, revised after spec review (rev 2)
+**Status:** Draft, revised after spec review (rev 3: plan review)
 **Target:** Claude Code mod API, build 2.1.296
 
 ## 1. Summary
@@ -41,26 +41,32 @@ These are deferred to `docs/ROADMAP.md`:
 The repository is both the marketplace and the mod.
 
 ```
-.claude-plugin/marketplace.json
+.claude-plugin/marketplace.json     marketplace listing (source ./plugin)
+package.json, tsconfig.json         dev-only: TypeScript for type-checking
+typings/claude-code.d.ts            pinned API snapshot (2.1.296) for tsc in CI; not shipped
 plugin/
   .claude-plugin/plugin.json        name "producer-tags", types "./types/index.d.ts"
   hooks/hooks.json                  { "modules": ["./register.tsx"] }
   hooks/register.tsx                wires units to events; no logic of its own
+  hooks/constants.ts, state.ts      ids, defaults, timings; $.state atoms
+  hooks/notify.ts, codec.ts         toastOnce/logError/act; base64
   hooks/shell.ts                    command tokenizer/segmenter (pure)
-  hooks/triggers.ts                 event → trigger id (pure)
-  hooks/director.ts                 settings/cooldown/claim → play decision
-  hooks/player.ts                   OS detection + playback routing
-  hooks/library.ts                  bundled + imported sounds, WAV parsing, peaks, base64
+  hooks/triggers.ts                 event → trigger hit (pure)
+  hooks/pipeline.ts                 settings/cooldown/claim → play; finish; mute
+  hooks/platform.ts, player.ts      OS detection; playback routing
+  hooks/library.ts                  bundled + imported sounds, WAV parsing, peaks
+  hooks/catalog.ts                  GENERATED catalog of bundled sounds
+  hooks/imports.ts                  import and delete user sounds
   hooks/settings.ts                 store load/migrate/merge/save
-  hooks/ui/pane.tsx                 /tags pane
+  hooks/ui/visual.ts, animate.ts    bar/waveform text; the 10 fps band loop
+  hooks/ui/pane.tsx, pane-actions.ts  /tags pane and its state transforms
   hooks/ui/band.tsx                 now-playing band (AbovePrompt)
   hooks/ui/badges.tsx               ToolUse row badges
   hooks/ui/mode.tsx                 SessionMode label
   hooks/ui/fader.client.tsx         Client module: pointer volume fader
-  hooks/*.test.ts                   claude plugin test suites
-  sounds/*.wav, sounds/catalog.json
-  types/index.d.ts                  PluginState contract
-  types/vendor/claude-code.d.ts     pinned API snapshot for tsc in CI (see §12)
+  sounds/*.wav                      GENERATED
+  tests/*.test.ts(x), tests/world.tsx  claude plugin test suites and shared fakes
+  types/index.d.ts                  shared types + PluginState contract
 tools/generate-tags/                Python (stdlib only) tag generator
 docs/ROADMAP.md
 README.md, LICENSE (MIT), CHANGELOG.md
@@ -77,8 +83,8 @@ README.md, LICENSE (MIT), CHANGELOG.md
    - `classic.SessionStart`
    - `session.end`
    - `classic.Stop`
-2. **`triggers.ts`** turns the event into a `TriggerHit` (`{ triggerId, toolUseId? }`) or `null`.
-3. **`director.ts`** combines the hit with settings, cooldowns, and a claim on `nowPlaying`, then decides `{ play: soundId, gain, token }` or `{ skip: reason }`.
+2. **`triggers.ts`** turns the event into a `Hit` (`{ key, sound }`) or `null`.
+3. **`pipeline.ts`** combines the hit with settings, cooldowns, and a claim on `nowPlaying`, then plays it or skips it.
 4. **`library.ts`** resolves the sound ID to a clip: `{ asset | path | base64+mime }`, `durationMs`, `caption`, `riff`, `peaks`.
 5. **`player.ts`** plays it. It reports when playback actually starts and when it ends.
 6. **State:** when playback starts, `nowPlaying.startedAt` is set and `tagged[toolUseId]` is written. When it ends, `nowPlaying` is cleared by compare-and-swap on `token`.
@@ -106,6 +112,7 @@ A tool result fires nothing if any of these hold:
 - `result.timedOutAfterMs`
 - `result.backgroundedByUser`
 - `result.interrupted`
+- the tool call's dispatch was aborted (`next.signal.aborted`). An interrupt usually comes back as `isError` with no record, so `result.interrupted` alone misses it.
 
 Those results come back before the command has finished, or after the user stopped it.
 
@@ -277,15 +284,15 @@ Every route reports `started` and `ended` back to the director.
 **windows**
 
 - Playback runs through `$.process.spawn` of `powershell.exe -NoProfile -NonInteractive -STA -EncodedCommand <constant script>`.
-- All data travels in environment variables: `PT_FILE`, `PT_GAIN`, `PT_MS`, `PT_POLL`. Nothing is interpolated into the script.
+- All data travels in environment variables: `PT_FILE`, `PT_GAIN`, `PT_MS`, `PT_CAP`. Nothing is interpolated into the script.
 - The script uses WPF `MediaPlayer`. It prints `started` after `Play()`, then `t` every 100 ms.
-- It ends after `PT_MS`. When `PT_POLL=1` (mp3 imports, length unknown), it ends instead when `NaturalDuration` is reached, with a 15 s cap.
+- It ends after `PT_MS`. When `PT_MS` is `0` (an mp3 import, length unknown), it ends instead when `NaturalDuration` is reached. Either way it stops at `PT_CAP` (15 s).
 - **Stopping:** the director sets an abort flag. On the next `t` tick, the stream loop breaks, which kills the child.
 
 **wsl**
 
 - Same as windows.
-- The environment adds `WSLENV=<existing>:PT_FILE/p:PT_GAIN:PT_MS:PT_POLL`. The `/p` flag translates the path.
+- The environment adds `WSLENV=<existing>:PT_FILE/p:PT_GAIN:PT_MS:PT_CAP`. The `/p` flag translates the path.
 - If MediaPlayer can't open a `\\wsl.localhost\…` path, the file is copied once to `%TEMP%\producer-tags\` (§14).
 
 **linux**
@@ -294,7 +301,7 @@ The player runs inside `sh -c` wrapper. The wrapper:
 
 - starts the player in the background,
 - prints `pid <n>`, then `t` every 100 ms while the player is alive,
-- exits when the player exits.
+- exits when the player exits, and kills the player if the wrapper itself is killed (a `trap`), so a reload never orphans it.
 
 To stop it, run `kill <n>` via `$.process.run`, then break the loop.
 
@@ -311,13 +318,13 @@ Nothing plays. The band still shows the caption, and a toast appears once per se
 
 **Fallback if MediaPlayer is unreliable** (§14, risk 3)
 
-- Windows and WSL use `System.Media.SoundPlayer.PlaySync()`.
+- Windows and WSL use `System.Media.SoundPlayer`: `Play()`, then the same `t` ticks until `PT_MS` (or `PT_CAP`), then `Stop()`.
 - SoundPlayer is WAV only and has no volume control. The pane then hides the fader on Windows, and imports there are limited to WAV.
 - The spec accepts either outcome; the decision comes from that early check.
 
 ### 6.3 `session.close`
 
-`session.end` gives one 1.5 s budget to every hook and to core, and in-flight `$` calls are aborted when it expires. So the close tag is fired **detached**, and the hook returns `next(e)` immediately:
+`session.end` gives one 1.5 s budget to every hook and to core, and in-flight `$` calls are aborted when it expires. So the close tag is fired **detached**: the hook starts the launch without awaiting it and returns `next(e)` immediately:
 
 - **mac:** `$.process.run(["sh", "-c", 'afplay -v "$PT_GAIN" "$PT_FILE" >/dev/null 2>&1 &'], { env })`. Bundled files are referenced by their path under `$.plugin.root`.
 - **linux:** the same pattern, using the detected player.
@@ -327,9 +334,9 @@ Whether a detached child survives exit has to be checked early (§14). If it doe
 
 ## 7. Sound library
 
-### 7.1 Bundled tags (`sounds/catalog.json`)
+### 7.1 Bundled tags (`hooks/catalog.ts`)
 
-Each entry: `{ id, file, caption, riff, durationMs, peaks: number[64] }`. The generator writes the file.
+Each entry: `{ id, file, caption, riff, durationMs, peaks: number[64], isVoice }`. The generator writes the file as a TS module, because a hooks module cannot import JSON.
 
 | ID | Caption (provisional; final lines are reviewed while generating, §11) | Riffing on |
 |---|---|---|
@@ -427,7 +434,7 @@ Command answers are kept to a few words because the model also reads them.
   - **Every surface:** `[−]` / `[+]` buttons in steps of 10, plus a percentage readout. They work by keyboard and on every surface.
   - **Terminal and desktop:** a pointer fader as an extra, `fader.client.tsx`.
     - It updates `$.state` on every move.
-    - It saves to the store on pointer up, or after a 500 ms debounce.
+    - It saves to the store on pointer up, and on each arrow-key step.
     - It sends values through `surface.post` → `ui.message`.
   - The volume controls are hidden on Windows under the SoundPlayer fallback.
 - Mute button.
@@ -438,8 +445,7 @@ Command answers are kept to a few words because the model also reads them.
 - Sound `Select`: bundled sounds first, then imports.
 - ▶ preview.
 - Waveform:
-  - **Baseline, every surface:** block characters (`▁▂▃▄▅▆▇█`) drawn from `peaks`. During a preview, a playhead column is drawn from the `bandFrame` state, as in §8.3.
-  - **Terminal upgrade:** a 16×1 `Raster` repainted with `$.ui.blit`, once a first blit has succeeded in the session (§8.3).
+  - 16 block characters (`▁▂▃▄▅▆▇█`) drawn from `peaks`, on every surface. During a preview, the part already played is drawn in the accent colour, redrawn from the `bandFrame` state as in §8.3.
   - Hidden below 80 body columns.
 
 **Custom section**
@@ -454,7 +460,7 @@ A path `Input`, an `[Import]` button, and one status line.
 **Pads**
 
 - Buttons with `hotkey` 1–9, mapped to the first nine bundled voice tags.
-- Pad hotkeys are turned off while any `Input` in the pane has focus, which is tracked through `ui.focus`. That way digits typed into a pattern or path never fire pads. (Whether that is needed is checked in §14.)
+- A focused `Input` takes every printable key (`InputProps`), so digits typed into a pattern or path never fire pads.
 
 **Studio**
 
@@ -470,7 +476,7 @@ The band is only raised on terminal and desktop. VS Code and mobile get no band 
 
 **When it shows**
 
-- While `nowPlaying` is live, from `started` until `ended` plus 1 s.
+- While `nowPlaying` is on stage: from `started` until `ended` plus 1 s, and never past its `deadline`.
 - Only if Studio → band is on.
 - Not while `hasSurvey` is true.
 - Otherwise the hook returns `next(e)`.
@@ -485,14 +491,11 @@ The band is only raised on terminal and desktop. VS Code and mobile get no band 
 
 **Animation**
 
-- **Baseline, every surface:** a `bandFrame: number` key in `$.state`, written up to 10 times a second by a `$.clock` loop. Only the band and pane instances that read it redraw.
-  - The equalizer is 10 block characters chosen from `peaks[(now − startedAt) / durationMs]`.
+- One loop on every surface: a `bandFrame: number` key in `$.state`, written up to 10 times a second by `$.clock.every`. Only the band and pane instances that read it redraw.
+  - The equalizer is 10 block characters chosen from `peaks[(now − startedAt) / durationMs]`, drawn as `Text`.
   - For imports of unknown length, the bars are pseudo-random from a seed.
-- **Terminal upgrade:** a 10×1 `Raster` repainted with `$.ui.blit` at about 30 fps.
-  - The `requestId` is captured from `e.requestId` while drawing.
-  - On the first rejection, the band drops back to the baseline for the rest of the session.
 - `$.ui.invalidate` is **never** used for animation, because it is plugin-wide and would redraw every badge.
-- Both loops stop at `ended`.
+- The loop stops once the entry is off stage: past `endedAt` plus the tail, or past its `deadline`.
 
 **Caption highlight**
 
@@ -549,11 +552,11 @@ imports: ImportedSound[]  // { id, name, file, ext, bytes, durationMs | null, pe
 | `nowPlaying` | `{ token, soundId, triggerId, caption, riff, claimedAt, startedAt \| null, durationMs \| null, deadline, toolUseId? } \| null` |
 | `bandFrame` | `number` |
 | `captionWord` | `number` |
-| `bandMode` | `"blit" \| "state"` |
 | `tagged` | `StateFamily<SoundId \| null>`, keyed by `tool_use_id`. Entries accumulate for the session; that is acceptable at session scale. |
 | `platform` | `{ os, player } \| null` |
 | `cooldowns` | `Record<TriggerId, number>` |
-| `paneDraft` | `{ customPattern, customOutcome, customSound, importPath, message, isInputFocused }` |
+| `paneDraft` | `{ isAdding, customPattern, customOutcome, customSound, importPath, message }` |
+| `toasted` | the toast causes already shown this session |
 
 ### 9.3 Writes
 
@@ -591,7 +594,7 @@ Python 3, standard library only. Randomness is seeded so the committed WAVs can 
   - Calls `SetOutputToWaveFile(path, new SpeechAudioFormatInfo(22050, Sixteen, Mono))`.
   - On WSL, the output path is converted to a Windows path.
 - **`say`** (macOS): `say --file-format=WAVE --data-format=LEI16@22050 -o`.
-- **`elevenlabs`:** interface only, for later. It reads its API key from the environment.
+- **`elevenlabs`:** a stub for later that exits with "not implemented yet". The real backend will read its API key from the environment.
 
 **Effects**
 
@@ -609,7 +612,7 @@ Every output is then normalized to a −1 dBFS peak and given 10 ms fades.
 **Output**
 
 - 22.05 kHz, 16-bit mono WAV, written to `plugin/sounds/`.
-- The generator also writes `catalog.json` (`durationMs` plus 64 peaks per sound).
+- The generator also writes `plugin/hooks/catalog.ts` (`durationMs` plus 64 peaks per sound).
 - The WAVs are committed.
 
 **Smoke test**
@@ -624,22 +627,18 @@ Every caption in §7.1 is provisional. The lines are reviewed with the user whil
 
 ### 12.1 Test suites
 
-`claude plugin test plugin/` runs these suites. Tests have no real file system, network, or processes. Each suite fakes `$` operations with its own hooks underneath the plugin: `process.run`, `process.spawn` (an async-generator hook), `audio.play`, `fs.read`, `fs.stat`, `env.get`, and `ui.blit`. The `ui.blit` fake answers `{ value: {} }`, or `{ deny }` to exercise the fallback.
+`claude plugin test plugin` runs these suites. Tests have no real file system, network, or processes. A shared `tests/world.tsx` fakes every `$` operation the mod uses, beneath the plugin, per OS.
 
 | Suite | Covers |
 |---|---|
-| `shell.test.ts` | quotes, escapes, `$(…)`, heredoc commit messages, every separator, grouping, `bash -c`, prefix stripping, token-vs-prefix matching |
-| `triggers.test.ts` | `gitOperation` for each kind (including `auto-merge-enabled` and "Already up to date"); background, timeout, and interrupt skips; every runner; non-run flags; attributable vs `\| tail`, `; echo`, `\|\| true` with pass/fail/none output; custom patterns ignoring heredoc bodies; model families (same-family switch, `[1m]` suffix, `resume`/`auto` ignored); `session.close` reasons; `stop_hook_active`; subagent calls fire; plugin-origin calls ignored |
-| `director.test.ts` | mute; compare-and-swap claim under two concurrent pipelines; dropping on a live claim; deadline expiry after a simulated reload (stale `nowPlaying`); cooldown on the mocked clock; priority; custom wins; disabled skipped; previews interrupt and bypass cooldown; the 15 s cap |
-| `settings.test.ts` | migrate before merge; arrays replace; new triggers appear; corrupt value → defaults; unknown sound reset; invalid pattern disabled |
-| `library.test.ts` | WAV parser (8/16/24-bit, float, stereo, extensible, `LIST` chunk, odd pad); base64 decoder; import validation; slug rules and case-insensitive collisions; delete only when `isCopy`; missing file falls back |
-| `player.test.ts` | each OS branch and its exact argv and env (including `-EncodedCommand`, `-STA`, `WSLENV`, `-LiteralPath`); abort ends a ticking spawn loop; Linux kill by PID; detached `session.close` command |
-| `register.test.ts` | `tool.call` resolves with the unchanged result **before** a slow fake `audio.play` resolves; `.catch` replays the result |
-| `ui.test.ts` | pane, band, badges, and mode label on `terminal` and `desktop` (with mobile and vscode where they apply); toggling, preview, add custom (valid and invalid), import, mute, −/+ volume; blit success vs `deny` fallback; badges only for started tags |
+| `codec`, `shell`, `triggers`, `settings`, `library`, `player`, `visual`, `pane-actions` | the pure units (tokenizer, trigger rules, settings merge, WAV parsing and slugs, player argv/env, drawing helpers, pane transforms) |
+| `pipeline` | end-to-end through `register.tsx` per OS: the tool result returns untouched before a slow play; claims under concurrency; drop-while-playing; cooldown; deadline expiry; previews interrupt and bypass cooldown; mute and `/tags-mute`; imports and missing-file fallback; failed plays; the 15 s cap; Linux kill; WSL/Windows argv and env; model/session/stop events; the detached outro; other plugins' calls ignored |
+| `imports` | the pure path cleaning (drag-and-drop quotes and escapes) and `resetSound` |
+| `band`, `badges`, `pane`, `fader` | each surface they render on; the import flows through the pane; the orphaned-entry deadline in the band |
 
 ### 12.2 Type checks and validation
 
-- `tsc -p plugin/tsconfig.ci.json` type-checks against `types/vendor/claude-code.d.ts`, a pinned snapshot of this build's API using the tsconfig from the snapshot's header.
+- `npx tsc -p .` type-checks against `typings/claude-code.d.ts`, a pinned snapshot of this build's API, with the tsconfig from the snapshot's header.
 - `claude plugin validate plugin` runs in CI. Whether the CLI needs authentication in CI is checked early (§14).
 
 ### 12.3 Generator
@@ -652,7 +651,6 @@ The test kit can't check these:
 
 - hover cards
 - painted output
-- real blits
 - the pointer fader
 - real playback, in tier order, on macOS (required for release), Linux with PipeWire and PulseAudio (required for release), and Windows (best effort before release): each trigger, imports, mute mid-clip, the band animation, and the `session.close` outro
 
@@ -674,13 +672,13 @@ The WSL route is verified on the author's machine.
 
 ## 14. Risks to verify first (first implementation task: one throwaway spike, then update this spec)
 
-0. **Windows tool name** (tier 3; a failure here is documented, not a release blocker). Does a native Windows session run commands through `Bash` or a `PowerShell` tool? Check `$.tool.list()` on a Windows install. If it's PowerShell, add it to the `tool.call` matcher and pick the segmenter per tool.
-1. **Detached dispatch.** Does `$.clock.after(0, …)` from a `tool.call` hook run outside the call's dispatch and signal?
-2. **Live blit.** Does `$.ui.blit` work on a `Raster` in the band and the pane in a live session?
-3. **Windows MediaPlayer.** Does it play to the end headless with `-STA` and the `t` ticks? Does it play from a `\\wsl.localhost` path? Is volume respected? If not, use the SoundPlayer fallback (§6.2).
-4. **Detached process.** Does a detached `afplay` or `Start-Process` child survive Claude Code exiting?
-5. **Pointer and hover.** Do pointer and hover events work on the terminal's main screen? This affects the fader and the hover card; keyboard fallbacks exist.
-6. **Pads vs. Input.** Does a pad `hotkey` steal digits typed into a focused `Input` in the same pane?
-7. **`/mute`.** Is the name accepted with `immediate: true`?
-8. **CI.** Do `claude plugin validate` and `claude plugin test` run in CI without authentication?
-9. **SAPI quality.** Are the SAPI voices good enough after effects? If not, render with `say` on a Mac before release.
+0. **Windows tool name** (tier 3; a failure here is documented, not a release blocker). Does a native Windows session run commands through `Bash` or a `PowerShell` tool? If it's PowerShell, add it to the `tool.call` matcher, a `;`-only segmenter, and a regex git fallback for results without `gitOperation`.
+1. **Detached dispatch.** Does `$.clock.after(0, …)` from a `tool.call` hook run outside the call's dispatch, and can its work outlast 10 s? If not, the pipeline needs a re-plan before it is built.
+2. **Windows MediaPlayer.** Does it play to the end headless with `-STA` and the `t` ticks? Does it play from a `\\wsl.localhost` path? Is volume respected? If not, use the SoundPlayer fallback (§6.2); if only the UNC path fails, copy to `%TEMP%\producer-tags\` once per sound.
+3. **Detached process.** Does a detached `afplay` or `Start-Process` child, launched without awaiting it, survive Claude Code exiting?
+4. **Pointer and hover.** Do pointer and hover events work on the terminal's main screen? If not, the fader shows only in fullscreen and the badge has no hover card; the −/+ buttons remain.
+5. **`/mute`.** Is the name accepted with `immediate: true`?
+6. **CI.** Do `claude plugin validate` and `claude plugin test` run in CI without authentication?
+7. **SAPI quality.** Are the SAPI voices good enough after effects? If not, render with `say` on a Mac before release.
+
+Resolved by reading the API, so not spiked: a focused `Input` takes every printable key, so pad hotkeys cannot steal typed digits. Dropped from v1: the 30 fps `Raster` + `$.ui.blit` equalizer (the 10 fps state loop repaints the band anyway).
