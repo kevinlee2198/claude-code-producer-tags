@@ -12,7 +12,10 @@ It is an **unofficial parody fan project**. It is not affiliated with Anthropic 
 
 ### Goals
 
-- Tags fire reliably on the v1 triggers on **macOS** (first priority) and **Windows**. WSL and Linux are best-effort.
+- Tags fire reliably on the v1 triggers. Platform tiers:
+  - **Tier 1, macOS:** every feature is tested and polished first.
+  - **Tier 2, Linux:** fully supported and on the manual checklist.
+  - **Tier 3, Windows and WSL:** supported and expected to work; known rough edges are documented, not blockers for release.
 - Users can install with one command and set everything up from one pane.
 - The mod never slows down, blocks, or changes Claude Code's real work.
 - Sound defaults are restrained: frequent events start off.
@@ -258,7 +261,7 @@ Detection is lazy: a promise memoized on first use and cached in `$.state.platfo
 2. Otherwise, run `$.process.run(["uname", "-s"])`:
    - `Darwin` → `mac`
    - `Linux` → read `/proc/version`. If it contains `microsoft`, the OS is `wsl`; otherwise it is `linux`.
-3. On Linux, the player is the first of `paplay`, `ffplay`, or `aplay` found via `sh -c 'command -v …'`.
+3. On Linux, the player is the first of `pw-play`, `paplay`, `ffplay`, or `aplay` found via `sh -c 'command -v …'`.
 
 ### 6.2 Routes
 
@@ -297,6 +300,7 @@ To stop it, run `kill <n>` via `$.process.run`, then break the loop.
 
 | Player | Formats | Volume |
 |---|---|---|
+| `pw-play` (PipeWire) | wav, aiff (libsndfile; no mp3) | `--volume` 0.0–1.0 |
 | `paplay` | wav, aiff (libsndfile; no mp3) | `--volume` 0–65536 |
 | `ffplay -nodisp -autoexit -loglevel quiet` | all | `-volume` 0–100 |
 | `aplay` | wav only | none |
@@ -650,7 +654,7 @@ The test kit can't check these:
 - painted output
 - real blits
 - the pointer fader
-- real playback on macOS and Windows: each trigger, imports, mute mid-clip, the band animation, and the `session.close` outro
+- real playback, in tier order, on macOS (required for release), Linux with PipeWire and PulseAudio (required for release), and Windows (best effort before release): each trigger, imports, mute mid-clip, the band animation, and the `session.close` outro
 
 The WSL route is verified on the author's machine.
 
@@ -670,7 +674,7 @@ The WSL route is verified on the author's machine.
 
 ## 14. Risks to verify first (first implementation task: one throwaway spike, then update this spec)
 
-0. **Windows tool name.** Does a native Windows session run commands through `Bash` or a `PowerShell` tool? Check `$.tool.list()` on a Windows install. If it's PowerShell, add it to the `tool.call` matcher and pick the segmenter per tool.
+0. **Windows tool name** (tier 3; a failure here is documented, not a release blocker). Does a native Windows session run commands through `Bash` or a `PowerShell` tool? Check `$.tool.list()` on a Windows install. If it's PowerShell, add it to the `tool.call` matcher and pick the segmenter per tool.
 1. **Detached dispatch.** Does `$.clock.after(0, …)` from a `tool.call` hook run outside the call's dispatch and signal?
 2. **Live blit.** Does `$.ui.blit` work on a `Raster` in the band and the pane in a live session?
 3. **Windows MediaPlayer.** Does it play to the end headless with `-STA` and the `t` ticks? Does it play from a `\\wsl.localhost` path? Is volume respected? If not, use the SoundPlayer fallback (§6.2).
