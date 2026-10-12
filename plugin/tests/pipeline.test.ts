@@ -372,3 +372,53 @@ describe('fire, races between claim and play', () => {
     expect(active.size).toBe(1)
   })
 })
+
+describe('fire and mute timing', () => {
+  test('/mute stops the clip even when saving the setting fails', async () => {
+    const { host, active } = slowRig({ delay: 0 })
+    expect(await fire(host, commit, 'a')).toBe(true)
+    expect(active.size).toBe(1)
+    host.storeSet = async () => Promise.reject(new Error('disk full'))
+    await expect(toggleMute(host)).rejects.toThrow()
+    await sleep(5)
+    expect(active.size).toBe(0)
+    expect((await host.state.settings.read())?.muted).toBe(true)
+  })
+
+  test('a /mute whose state write lands between the owner read and the settings read plays nothing', async () => {
+    const { host, active, plays } = slowRig({ delay: 0 })
+    const read = host.state.nowPlaying.read
+    let armed = false
+    host.state.nowPlaying.read = async () => {
+      const np = await read()
+      if (armed && np !== null) {
+        armed = false
+        await host.state.settings.update(s => (s === null ? s : { ...s, muted: true }))
+      }
+      return np
+    }
+    await fire(host, push, 'warm')
+    await host.state.nowPlaying.update(() => null)
+    plays.length = 0
+    await host.state.cooldowns.update(() => ({}))
+    armed = true
+    expect(await fire(host, commit, 'tu1')).toBe(false)
+    expect(plays).toHaveLength(0)
+    expect(active.size).toBe(1)
+  })
+
+  test('a clip stopped during startup clears quietly: no toast, no badge', async () => {
+    const { host } = slowRig({ delay: 0 })
+    host.state.platform = { read: async () => ({ os: 'linux', player: 'aplay' }) as never, update: async () => ({}) as never }
+    host.spawn = async function* () {
+      await sleep(50)
+    }
+    const trigger = fire(host, commit, 'tu1')
+    await sleep(10)
+    await toggleMute(host)
+    expect(await trigger).toBe(false)
+    expect(host.toasts.filter(t => t.includes('could not play'))).toHaveLength(0)
+    expect(host.tags.get('tu1') ?? null).toBeNull()
+    expect(await host.state.nowPlaying.read()).toBeNull()
+  })
+})

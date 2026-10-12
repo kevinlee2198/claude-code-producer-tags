@@ -60,8 +60,10 @@ export async function fire(host: Host, hit: Hit, toolUseId: string | null = null
   if (platform.player === 'none') await toastOnce(host, 'no-player', 'Producer Tags: no audio player found, so tags show as captions only.')
   // Re-check after the last await that can lose the claim: a preview, /mute or a newer claim may
   // have landed since. From here the stop, the play and `current` run with no await between them.
-  const [owner, latest] = await Promise.all([host.state.nowPlaying.read(), ensureLoaded(host)])
-  if (owner?.token !== token || latest.settings.muted) {
+  // Mute is read last, so a /mute that lands earlier is seen and one that lands later stops this clip.
+  const owner = await host.state.nowPlaying.read()
+  const isMuted = (await host.state.settings.read())?.muted !== false
+  if (owner?.token !== token || isMuted) {
     await updateIfMine(host, token, () => null)
     return false
   }
@@ -70,7 +72,9 @@ export async function fire(host: Host, hit: Hit, toolUseId: string | null = null
   current = { token, handle }
   if (!isPreview) await host.state.cooldowns.update(cooldowns => ({ ...cooldowns, [hit.key]: now }))
   if (!(await handle.started)) {
-    await failPlayback(host, token, null)
+    // Stopped during startup (a preview or /mute): clear quietly, it is not a failure.
+    if ((await handle.ended) === 'stopped') await updateIfMine(host, token, () => null)
+    else await failPlayback(host, token, null)
     return false
   }
   const startedAt = await host.now()
@@ -124,9 +128,14 @@ export async function fireDetached(host: Host, hit: Hit): Promise<void> {
 
 /** An atomic flip that stops the clip when muting. */
 export async function toggleMute(host: Host): Promise<Settings> {
-  const settings = await changeSettings(host, s => ({ ...s, muted: !s.muted }))
-  if (settings.muted) stopCurrent()
-  return settings
+  try {
+    const settings = await changeSettings(host, s => ({ ...s, muted: !s.muted }))
+    if (settings.muted) stopCurrent()
+    return settings
+  } finally {
+    // The state flips before the store write, so a failed write must still silence the clip.
+    if ((await host.state.settings.read())?.muted === true) stopCurrent()
+  }
 }
 
 /** `/mute`'s answer, a few words because the model reads it too (spec §8.1). */
