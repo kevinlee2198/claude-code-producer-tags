@@ -97,8 +97,44 @@ export function testsPassed(facts: BashFacts): boolean {
   return PASS_MARKERS.some(marker => marker.test(facts.output))
 }
 
+/** Git global options that take a value as the next word (the `--opt=value` forms are one word). */
+const GIT_VALUE_OPTIONS = new Set(['-C', '-c', '--git-dir', '--work-tree'])
+
+/** The subcommand and its arguments, past git's global options; null when the segment is not git. */
+function gitSubcommand(words: readonly string[]): { name: string; args: string[] } | null {
+  if (words[0] !== 'git') return null
+  let i = 1
+  while (i < words.length && words[i]!.startsWith('-')) i += GIT_VALUE_OPTIONS.has(words[i]!) ? 2 : 1
+  const name = words[i]
+  return name === undefined ? null : { name, args: words.slice(i + 1) }
+}
+
+const hasFlag = (args: readonly string[], long: string, short: string): boolean =>
+  args.some(arg => arg === long || (/^-[a-zA-Z]+$/.test(arg) && arg.includes(short)))
+
+/**
+ * The engine builds `gitOperation` from git's own output, which `-q` silences. Only for a quiet commit or push
+ * that is attributable and succeeded: without `-q`, a missing gitOperation means nothing happened. Merge is not
+ * covered, since a quiet "already up to date" merge exits 0 too.
+ */
+function quietGitTriggers(facts: BashFacts): TriggerId[] {
+  if (facts.isError) return []
+  const segments = commandSegments(facts.command)
+  const ids: TriggerId[] = []
+  segments.forEach((segment, index) => {
+    const sub = gitSubcommand(segment.words)
+    if (sub === null || (sub.name !== 'commit' && sub.name !== 'push')) return
+    if (!hasFlag(sub.args, '--quiet', 'q') || sub.args.includes('--dry-run') || !isAttributable(segments, index)) return
+    if (sub.name === 'push') {
+      if (hasFlag(sub.args, '--dry-run', 'n')) return
+      ids.push('git.push')
+    } else ids.push('git.commit')
+  })
+  return ids
+}
+
 export function bashCandidates(facts: BashFacts): TriggerId[] {
-  const ids = gitTriggers(facts.git)
+  const ids = facts.git === null ? quietGitTriggers(facts) : gitTriggers(facts.git)
   if (testsPassed(facts)) ids.push('tests.pass')
   if (facts.isError) ids.push('command.fail')
   return ids

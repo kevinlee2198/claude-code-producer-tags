@@ -63,6 +63,36 @@ describe('git triggers come from gitOperation', () => {
   })
 })
 
+describe('quiet git commands (no gitOperation)', () => {
+  const key = (command: string, ran: Parameters<typeof bashFacts>[1] = ok()) => pickBashHit(allOn(), facts(command, ran))?.key ?? null
+  test('quiet commit and push fire', () => {
+    expect(key('git commit -q -m x')).toBe('git.commit')
+    expect(key('git add f && git commit -q -m x')).toBe('git.commit')
+    expect(key('git -C repo commit --quiet -m x')).toBe('git.commit')
+    expect(key('git -c user.name=a --no-pager commit -q -m x')).toBe('git.commit')
+    expect(key('git commit -qn -m x')).toBe('git.commit')
+    expect(key('git push -q')).toBe('git.push')
+  })
+  test('dry runs, merges and loud commands fire nothing', () => {
+    expect(key('git push -q -n')).toBeNull()
+    expect(key('git push --dry-run -q')).toBeNull()
+    expect(key('git commit -q --dry-run -m x')).toBeNull()
+    expect(key('git commit -m x')).toBeNull()
+    expect(key('git push')).toBeNull()
+    expect(key('git merge -q dev')).toBeNull()
+  })
+  test('needs an attributable, successful command', () => {
+    expect(key('git commit -q -m x || true')).toBeNull()
+    expect(key('git commit -q -m x', failed())).toBe('command.fail')
+    const s = allOn()
+    s.triggers['command.fail'].enabled = false
+    expect(pickBashHit(s, facts('git commit -q -m x', failed()))).toBeNull()
+  })
+  test('a present gitOperation is trusted as before', () => {
+    expect(key('git commit -q -m x', git({ push: { branch: 'main' } }))).toBe('git.push')
+  })
+})
+
 describe('skip rules', () => {
   test('background, auto-backgrounded, Ctrl+B and interrupted results fire nothing', () => {
     const s = allOn()

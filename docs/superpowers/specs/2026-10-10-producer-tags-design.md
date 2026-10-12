@@ -147,7 +147,7 @@ Those results come back before the command has finished, or after the user stopp
 | `session.close` | `session.end` with `reason` of `prompt_input_exit` or `logout` (not `clear`, `resume`, or `other`) | on | `pt:claude-outta` |
 | `turn.done` | `classic.Stop` without `stop_hook_active` | **off** | `pt:another-one` |
 
-**Git triggers** use the engine's structured `gitOperation`, never regex. That covers `git -C x commit`, aliases, amends, merges that were "Already up to date" (no `branch` action), `gh pr merge --auto`, and dry runs. Regex segmentation is used for git only on a tool that has no `gitOperation`, such as a PowerShell tool.
+**Git triggers** use the engine's structured `gitOperation`, never regex. That covers `git -C x commit`, aliases, amends, merges that were "Already up to date" (no `branch` action), `gh pr merge --auto`, and dry runs. Regex segmentation is used for git only on a tool that has no `gitOperation`, such as a PowerShell tool. One narrow fallback exists: the engine reads git's own output and `-q` silences it, so when `gitOperation` is absent, an attributable, successful `git commit` or `git push` carrying `-q`/`--quiet` (and not `--dry-run`, or `-n` for push) still fires `git.commit`/`git.push`. Merge is not covered, because a quiet already-up-to-date merge exits 0.
 
 **Model switches:**
 
@@ -723,3 +723,4 @@ Resolved by reading the API and running `claude plugin validate` and `claude plu
 | R5 `/mute` | registered with `immediate: true` | — | `/tags-mute` stays as the fallback only |
 | R6 CI without credentials | yes: validate and test pass with an empty `HOME` (`test` exits 1 when no test files exist) | — | CI plugin job keeps `continue-on-error: false` |
 | R7 SAPI quality | deferred to Task 5's listening review | — | — |
+| Quiet git commands | `git commit --allow-empty -q` gives `gitOperation` null and empty stdout; the same without `-q` gives `{commit:{sha,kind,branch}}` (Claude Code 2.1.296) | — | Quiet-flag fallback in `triggers.ts` (§4.2) |
