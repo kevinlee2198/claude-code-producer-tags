@@ -1,0 +1,7 @@
+{
+  "name": "producer-tags",
+  "version": "0.1.0",
+  "description": "Parody producer tags when Claude Code commits, pushes, merges, passes tests, switches models or exits.",
+  "author": { "name": "Kevin Lee" },
+  "types": "./types/index.d.ts"
+}
