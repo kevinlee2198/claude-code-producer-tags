@@ -354,7 +354,7 @@ Whether a detached child survives exit has to be checked early (§14). If it doe
 
 Each entry: `{ id, file, caption, riff, durationMs, peaks: number[64], isVoice }`. The generator writes the file as a TS module, because a hooks module cannot import JSON.
 
-| ID | Caption (provisional; final lines are reviewed while generating, §11) | Riffing on |
+| ID | Caption (approved 2026-10-11 as v0.1 placeholders; better voices and lines are the next step after merge) | Riffing on |
 |---|---|---|
 | `pt:anthropic-trust` | "If Anthropic don't trust you, I'm gon' shoot you" | Metro Boomin |
 | `pt:just-merged` | "Oh Lord, Claude just merged another one" | Jetsonmade |
@@ -368,7 +368,7 @@ Each entry: `{ id, file, caption, riff, durationMs, peaks: number[64], isVoice }
 | `pt:claude-outta` | "Claude outta here" | Wheezy |
 | `pt:khaled-claude` | "Claude Code, Claude Code, Claude Code-ah" | DJ Khaled |
 | `pt:another-one` | "Another one" | DJ Khaled |
-| `pt:tay-keith-fix` | "Tay Keith, fix this—" | Tay Keith |
+| `pt:tay-keith-fix` | "Tay Keith, fix this" | Tay Keith |
 | `pt:808-boom`, `pt:riser`, `pt:scratch` | (effects) | — |
 
 ### 7.2 Imports
@@ -722,5 +722,5 @@ Resolved by reading the API and running `claude plugin validate` and `claude plu
 | R4 Pointer and hover | yes, on the main screen | pending (mac) | Fader and badge hover card stay; no "R4 no" edits |
 | R5 `/mute` | registered with `immediate: true` | — | `/tags-mute` stays as the fallback only |
 | R6 CI without credentials | yes: validate and test pass with an empty `HOME` (`test` exits 1 when no test files exist) | — | CI plugin job keeps `continue-on-error: false` |
-| R7 SAPI quality | deferred to Task 5's listening review | — | — |
+| R7 SAPI quality | approved by the user as placeholders (Microsoft David Desktop, SAPI) | — | Ship v0.1 with these; improving the voices and lines is the next step after merge |
 | Quiet git commands | `git commit --allow-empty -q` gives `gitOperation` null and empty stdout; the same without `-q` gives `{commit:{sha,kind,branch}}` (Claude Code 2.1.296) | — | Quiet-flag fallback in `triggers.ts` (§4.2) |
