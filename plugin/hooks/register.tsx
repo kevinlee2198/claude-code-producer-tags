@@ -2,8 +2,9 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { NowPlaying } from '../types'
+import { PANE_ID, WINDOWS_ENGINE } from './constants'
 import type { Host } from './host'
-import { resolveSound } from './library'
+import { resolveSound, soundOptions } from './library'
 import type { ResolvedSound } from './library'
 import { act, logError } from './notify'
 import { fireDetached, firePreview, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
@@ -11,6 +12,8 @@ import { ensureLoaded, loadFromStore } from './settings'
 import { isOnStage } from './stage'
 import { EMPTY_DRAFT, NO_WORD } from './state'
 import { bashFacts, hitFor, modelTrigger, pickBashHit, sessionCloseTrigger, sessionOpenTrigger, turnDoneTrigger } from './triggers'
+import { mobilePaneView, paneView } from './ui/pane'
+import { progressOf } from './ui/visual'
 import { badgeView } from './ui/badges'
 import { bandView } from './ui/band'
 import { modesWith } from './ui/mode'
@@ -82,6 +85,8 @@ export const register: Register = on => {
    */
   let host: Host | null = null
   let muteCommand: 'mute' | 'tags-mute' = 'mute'
+  /** Set while a render has asked for the store to load, so redraws don't ask again. */
+  let isLoading = false
 
   // One session.start hook per plugin: every load-time step of the mod is here.
   on('session.start', async ($, e, next) => {
@@ -94,6 +99,11 @@ export const register: Register = on => {
     }
     try {
       await recoverStage(engine)
+    } catch (error) {
+      logError(engine, 'session.start', error)
+    }
+    try {
+      await engine.registerCommand({ name: 'tags', description: 'Open the Producer Tags pane' })
     } catch (error) {
       logError(engine, 'session.start', error)
     }
@@ -208,6 +218,58 @@ export const register: Register = on => {
     } catch (error) {
       logError(host ?? hostOf($), 'badge', error)
       return engine
+    }
+  })
+
+  on('command.run', { command: 'tags' }, async $ => {
+    const engine = host ?? hostOf($)
+    try {
+      await engine.openPane({ id: PANE_ID, title: 'Producer Tags', focus: true, closeOnEscape: true })
+      return { text: 'Opened Producer Tags.' }
+    } catch (error) {
+      logError(engine, '/tags', error)
+      return { text: 'Producer Tags hit an error.' }
+    }
+  })
+
+  on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const engine = host ?? hostOf($)
+    try {
+      const settings = await read($, settingsAtom)
+      const imports = (await read($, importsAtom)) ?? []
+      if (settings === null) {
+        if (!isLoading) {
+          isLoading = true
+          engine.after(0, () => act(engine, 'pane load', () => loadFromStore(engine).finally(() => (isLoading = false))))
+        }
+        const { Text } = $.ui.resolve(e)
+        return <Text dimColor>Loading Producer Tags…</Text>
+      }
+      if (e.surface === 'mobile') {
+        const { Box, Button, Text } = $.ui.resolve(e)
+        return mobilePaneView({ Box, Button, Text }, engine, settings)
+      }
+      const { Box, Button, Input, Select, Text } = $.ui.resolve(e)
+      const platform = await read($, platformAtom)
+      const np = await read($, nowPlayingAtom)
+      const now = await $.clock.now()
+      const previewing = np !== null && np.key === 'preview' && isOnStage(np, now)
+      if (previewing) await read($, bandFrameAtom)
+      return paneView({
+        host: engine,
+        els: { Box, Button, Input, Select, Text },
+        settings,
+        imports,
+        draft: await read($, paneDraftAtom),
+        options: soundOptions(imports),
+        preview: previewing ? { soundId: np.soundId, progress: progressOf(np, now) } : null,
+        isWide: e.props.bodyColumns >= 80,
+        hasVolume: !((platform?.os === 'windows' || platform?.os === 'wsl') && WINDOWS_ENGINE === 'soundplayer'),
+      })
+    } catch (error) {
+      logError(engine, 'pane', error)
+      const { Text } = $.ui.resolve(e)
+      return <Text color="error">Producer Tags could not draw this pane.</Text>
     }
   })
 }
