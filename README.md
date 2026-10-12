@@ -62,7 +62,7 @@ Quiet git commands (`git commit -q`, `git push -q`) still fire tags, through a f
 ### Custom triggers
 
 In `/tags`, under **Custom**, press **+ Add** and enter a pattern:
-- **Pattern:** a regular expression without slashes, case-insensitive, matched anywhere in the Bash command, for example `docker compose up`. It's matched with a linear-time engine, so no pattern can slow Claude Code; backreferences and lookarounds aren't supported.
+- **Pattern:** a regular expression without slashes, case-insensitive, matched anywhere in the Bash command, for example `docker compose up`. It's matched with a linear-time engine, so no pattern can hang Claude Code; backreferences and lookarounds aren't supported.
 - **When:** on success, on failure, or either way.
 - **Limits:** up to 20 custom triggers. A custom trigger wins over the built-in ones.
 - **Heredocs:** text inside heredocs (such as commit messages) is ignored, so `deploy` won't fire because a commit message mentions deploying.

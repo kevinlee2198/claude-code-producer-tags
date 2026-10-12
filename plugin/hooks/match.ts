@@ -9,8 +9,9 @@ export type Matcher = { test(text: string): boolean }
 export type CompileResult = { ok: true; matcher: Matcher } | { ok: false; error: 'syntax' | 'unsupported'; detail: string }
 
 /** The most states a pattern may compile to, which bounds a test of MAX_MATCH_INPUT characters. */
-const MAX_STATES = 2000
+const MAX_STATES = 500
 const MAX_CODE = 0xffff
+const MAX_CACHED = 256
 
 class Refusal {
   readonly error: 'syntax' | 'unsupported'
@@ -98,6 +99,7 @@ class CharSet {
   private readonly ranges: Ranges
   private readonly isNegated: boolean
   private readonly ascii = new Uint8Array(128)
+  /** Non-ASCII answers, capped so a worker that sees many distinct characters doesn't grow it forever. */
   private readonly wide = new Map<number, boolean>()
 
   constructor(ranges: Ranges, isNegated: boolean) {
@@ -116,8 +118,10 @@ class CharSet {
 
   has(code: number): boolean {
     if (code < 128) return this.ascii[code] === 1
-    let hit = this.wide.get(code)
-    if (hit === undefined) this.wide.set(code, (hit = this.found(code)))
+    const cached = this.wide.get(code)
+    if (cached !== undefined) return cached
+    const hit = this.found(code)
+    if (this.wide.size < MAX_CACHED) this.wide.set(code, hit)
     return hit
   }
 }
@@ -440,13 +444,13 @@ function search(nfa: Nfa, text: string): boolean {
     }
   }
 
-  /** Adds `state` and what it reaches without reading to `list` at `pos`; true once that reaches MATCH. */
   let top = 0
   const push = (state: number, pos: number) => {
     if (addedAt[state] === pos) return
     addedAt[state] = pos
     stack[top++] = state
   }
+  /** Adds `state` and what it reaches without reading to `list` at `pos`; true once that reaches MATCH. */
   const close = (state: number, pos: number): boolean => {
     top = 0
     push(state, pos)

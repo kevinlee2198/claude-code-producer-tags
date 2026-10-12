@@ -75,7 +75,7 @@ describe('compileMatcher stays linear', () => {
     }
   })
   test('a pattern near the state cap finishes fast on the longest input', () => {
-    const m = matcher('(?:[a-z]|\\d){1,450}!x')
+    const m = matcher('(?:[a-z]|\\d){1,120}!x')
     const start = Date.now()
     expect(m.test(`${'a'.repeat(2048)}!`)).toBe(false)
     expect(m.test(`${'a'.repeat(2047)}!x`)).toBe(true)
@@ -102,6 +102,8 @@ describe('compileMatcher refuses what it does not support', () => {
   test('the compiled size is bounded', () => {
     expect(compileMatcher('(a{1,100}){1,100}')).toEqual({ ok: false, error: 'unsupported', detail: 'too many repeats' })
     expect(compileMatcher('a{99999999}')).toEqual({ ok: false, error: 'unsupported', detail: 'too many repeats' })
-    expect(compileMatcher('a{1,500}').ok).toBe(true)
+    // a{1,n} is 2n states with MATCH, so 250 fills the 500-state cap and 251 is over it.
+    expect(compileMatcher('a{1,250}').ok).toBe(true)
+    expect(compileMatcher('a{1,251}')).toEqual({ ok: false, error: 'unsupported', detail: 'too many repeats' })
   })
 })
