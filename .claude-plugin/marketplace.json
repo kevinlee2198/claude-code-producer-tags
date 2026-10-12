@@ -1,0 +1,5 @@
+{
+  "name": "producer-tags",
+  "owner": { "name": "Kevin Lee" },
+  "plugins": [{ "name": "producer-tags", "source": "./plugin" }]
+}
