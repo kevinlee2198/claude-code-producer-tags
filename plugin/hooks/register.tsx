@@ -4,6 +4,7 @@ import type { EngineInterface, Register } from 'claude-code'
 import type { NowPlaying } from '../types'
 import type { Host } from './host'
 import { resolveSound } from './library'
+import type { ResolvedSound } from './library'
 import { act, logError } from './notify'
 import { fireDetached, firePreview, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
 import { ensureLoaded, loadFromStore } from './settings'
@@ -185,20 +186,28 @@ export const register: Register = on => {
   })
 
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
+    let show: { sound: ResolvedSound } | null = null
     try {
       const soundId = await read($, memberOf(taggedAtom, e))
-      if (soundId === null) return next(e)
       const settings = await read($, settingsAtom)
-      if (settings?.studio.badges === false) return next(e)
-      const sound = resolveSound(soundId, (await read($, importsAtom)) ?? [])
-      if (sound === null) return next(e)
-      const engine = host ?? hostOf($)
-      const { Box, Button, Text } = $.ui.resolve(e)
-      const replay = () => act(engine, 'replay', () => firePreview(engine, soundId))
-      return badgeView({ Box, Button, Text }, await next(e), sound, `pt-${e.requestId}`.slice(0, 64), replay)
+      if (soundId !== null && settings?.studio.badges !== false) {
+        const sound = resolveSound(soundId, (await read($, importsAtom)) ?? [])
+        if (sound !== null) show = { sound }
+      }
     } catch (error) {
       logError(host ?? hostOf($), 'badge', error)
-      return next(e)
+    }
+    const engine = await next(e) // called exactly once, whatever the badge does
+    if (show === null) return engine
+    try {
+      const bound = host ?? hostOf($)
+      const soundId = show.sound.id
+      const { Box, Button, Text } = $.ui.resolve(e)
+      const replay = () => act(bound, 'replay', () => firePreview(bound, soundId))
+      return badgeView({ Box, Button, Text }, engine, show.sound, `pt-${e.requestId}`.slice(0, 64), replay)
+    } catch (error) {
+      logError(host ?? hostOf($), 'badge', error)
+      return engine
     }
   })
 }
