@@ -68,6 +68,31 @@ describe('now-playing band', () => {
   })
 })
 
+describe('band loop', () => {
+  test('the loop stops after the tail: the frame counter stays flat', { timeoutMs: 20_000 }, async ($, on) => {
+    const w = world(on, { audioMs: COMMIT.durationMs })
+    await $.session.start(START)
+    await bash($, w, 'git commit -m x', committed())
+    await w.clock.advance(COMMIT.durationMs + 1500)
+    const after = w.state.get('bandFrame')
+    await w.clock.advance(2000)
+    expect(w.state.get('bandFrame')).toBe(after)
+  })
+
+  test('the lit words are bold and the rest dim', { timeoutMs: 20_000 }, async ($, on) => {
+    const w = world(on, { audioMs: COMMIT.durationMs })
+    await $.session.start(START)
+    await bash($, w, 'git commit -m x', committed())
+    const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
+    await w.clock.advance(Math.floor(COMMIT.durationMs * 0.5))
+    const word = w.state.get('captionWord') as number
+    expect(word).toBeGreaterThanOrEqual(0)
+    const words = COMMIT.caption.split(/\s+/).filter(Boolean)
+    expect(await ui.find({ type: 'Text', text: words.slice(0, word + 1).join(' ') })).toBeDefined()
+    if (word + 1 < words.length) expect(await ui.find({ type: 'Text', text: words.slice(word + 1).join(' ') })).toBeDefined()
+  })
+})
+
 describe('mode label', () => {
   test('adds ♫ tags, or ♫ muted', async ($, on) => {
     world(on)

@@ -81,8 +81,8 @@ export async function fire(host: Host, hit: Hit, toolUseId: string | null = null
   const startedAt = await host.now()
   const started = await updateIfMine(host, token, np => startedEntry(np, startedAt))
   if (started?.token === token) {
+    startAnimation(host, token) // before the await: a later clip that wins the stage during it must keep its own loop
     await setTag(host, toolUseId, sound.id)
-    startAnimation(host, token)
   }
   handle.ended.then(
     result => act(host, 'finish', () => finish(host, token, toolUseId, result)),
@@ -180,5 +180,6 @@ export async function recoverStage(host: Host): Promise<void> {
     return
   }
   const token = np.token
+  if (np.startedAt !== null) startAnimation(host, token)
   host.after(clearAt - now, () => act(host, 'recover', () => updateIfMine(host, token, () => null)))
 }

@@ -43,7 +43,7 @@ export function waveformLevels(peaks: readonly number[] | null, width: number): 
 
 /** Which caption word is lit now; -1 when the clip's length is unknown (no highlight). */
 export function captionWordAt(np: NowPlaying, now: number): number {
-  if (np.durationMs === null || np.startedAt === null) return -1
+  if (np.durationMs === null || np.durationMs <= 0 || np.startedAt === null) return -1
   const words = np.caption.split(/\s+/).filter(Boolean).length
   return Math.min(words - 1, Math.floor(progressOf(np, now) * words))
 }

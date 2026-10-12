@@ -1,6 +1,7 @@
 import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
+import type { NowPlaying } from '../types'
 import type { Host } from './host'
 import { act, logError } from './notify'
 import { fireDetached, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
@@ -153,18 +154,25 @@ export const register: Register = on => {
   on('command.run', { command: 'tags-mute' }, async $ => muteAnswer(host ?? hostOf($)))
 
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    let show: { np: NowPlaying; now: number; frame: number; word: number } | null = null
     try {
       const np = await read($, nowPlayingAtom)
       const settings = await read($, settingsAtom)
       const frame = await read($, bandFrameAtom)
       const word = await read($, captionWordAtom)
       const now = await $.clock.now()
-      if (np === null || !isOnStage(np, now) || settings?.studio.band === false || e.props.hasSurvey) return next(e)
-      const { Box, Text } = $.ui.resolve(e)
-      return bandView({ Box, Text }, np, now, frame, word, await next(e))
+      if (np !== null && isOnStage(np, now) && settings?.studio.band !== false && !e.props.hasSurvey) show = { np, now, frame, word }
     } catch (error) {
       logError(host ?? hostOf($), 'band', error)
-      return next(e)
+    }
+    const engine = await next(e) // called exactly once, whatever the band does
+    if (show === null) return engine
+    try {
+      const { Box, Text } = $.ui.resolve(e)
+      return bandView({ Box, Text }, show.np, show.now, show.frame, show.word, engine)
+    } catch (error) {
+      logError(host ?? hostOf($), 'band', error)
+      return engine
     }
   })
 

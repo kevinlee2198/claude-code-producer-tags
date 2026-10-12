@@ -17,6 +17,7 @@ describe('visual', () => {
     expect(captionWordAt(np(), 2100)).toBe(2)
     expect(captionWordAt(np(), 9000)).toBe(3)
     expect(captionWordAt(np({ durationMs: null }), 2000)).toBe(-1)
+    expect(captionWordAt(np({ durationMs: 0 }), 2000)).toBe(-1)
   })
   test('levels stay in 0..7 and follow the peaks', () => {
     expect(levelsAt([0, 0, 0, 0], 0.5, 10, 3).every(l => l === 0)).toBe(true)

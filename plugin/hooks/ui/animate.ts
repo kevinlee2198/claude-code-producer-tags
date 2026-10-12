@@ -17,7 +17,9 @@ export function stopAnimation(): void {
 /** Redraws the band (and a previewing pane row) from state 10 times a second until the clip leaves the stage (spec §8.3). */
 export function startAnimation(host: Host, token: string): void {
   stopAnimation()
-  act(host, 'band frame', () => host.state.captionWord.update(() => NO_WORD))
+  act(host, 'band frame', async () => {
+    if ((await host.state.captionWord.read()) !== NO_WORD) await host.state.captionWord.update(() => NO_WORD)
+  })
   running = { token, timer: host.every(FRAME_MS, () => act(host, 'band frame', () => frame(host, token))) }
 }
 
