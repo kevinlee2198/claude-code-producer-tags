@@ -57,6 +57,9 @@ export const LINUX_WRAPPER =
 export const DETACH_COMMAND =
   "Start-Process -WindowStyle Hidden -FilePath powershell.exe -ArgumentList '-NoProfile','-NonInteractive','-STA','-EncodedCommand',$env:PT_SCRIPT"
 
+/** Backgrounds "$@" and a watchdog that kills it after `$PT_SECS` seconds (the 15 s clip cap). */
+const DETACH_LINUX = '"$@" >/dev/null 2>&1 & p=$!; (sleep "$PT_SECS"; kill "$p" 2>/dev/null) >/dev/null 2>&1 &'
+
 export function filePathOf(root: string, sound: ResolvedSound): string {
   return sound.source.kind === 'asset' ? `${root}/${sound.source.asset}` : sound.source.path
 }
@@ -110,8 +113,12 @@ export function detachedLaunch(
   existingWslEnv: string | undefined,
 ): { argv: string[]; env: Record<string, string> } | null {
   const gain = request.gain.toFixed(2)
+  const secs = String(Math.max(1, Math.ceil(request.maxMs / 1000)))
   if (platform.player === 'audio') {
-    return { argv: ['sh', '-c', 'afplay -v "$PT_GAIN" "$PT_FILE" >/dev/null 2>&1 &'], env: { PT_FILE: path, PT_GAIN: gain } }
+    return {
+      argv: ['sh', '-c', 'afplay -t "$PT_SECS" -v "$PT_GAIN" "$PT_FILE" >/dev/null 2>&1 &'],
+      env: { PT_FILE: path, PT_GAIN: gain, PT_SECS: secs },
+    }
   }
   if (platform.player === 'powershell') {
     const env = windowsEnv(platform.os, path, request.gain, request.sound.durationMs, request.maxMs, existingWslEnv)
@@ -120,7 +127,10 @@ export function detachedLaunch(
     return { argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', DETACH_COMMAND], env }
   }
   if (platform.player === 'none') return null
-  return { argv: ['sh', '-c', '"$@" >/dev/null 2>&1 &', 'pt-play', ...linuxPlayerArgv(platform.player, path, request.gain)], env: {} }
+  return {
+    argv: ['sh', '-c', DETACH_LINUX, 'pt-play', ...linuxPlayerArgv(platform.player, path, request.gain)],
+    env: { PT_SECS: secs },
+  }
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -190,7 +200,10 @@ async function powershellEnv(host: Host, platform: Platform, request: PlayReques
 }
 
 function playPowerShell(host: Host, platform: Platform, request: PlayRequest): PlayHandle {
-  const handle = powershellEnv(host, platform, request).then(env => playProcess(host, [...WINDOWS_ARGV], env, request.maxMs, false))
+  const failed: PlayHandle = { started: Promise.resolve(false), ended: Promise.resolve('failed'), stop: () => undefined }
+  const handle = powershellEnv(host, platform, request)
+    .then(env => playProcess(host, [...WINDOWS_ARGV], env, request.maxMs, false))
+    .catch(() => failed)
   return {
     started: handle.then(h => h.started),
     ended: handle.then(h => h.ended),
