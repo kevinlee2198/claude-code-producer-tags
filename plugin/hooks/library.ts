@@ -31,13 +31,14 @@ export function allowedExts(os: OsName, player: PlayerName): AudioExt[] {
 
 export type WavInfo = { durationMs: number; peaks: number[] }
 
-/** PCM 8/16/24-bit, float32, mono or more channels, WAVE_FORMAT_EXTENSIBLE; null for anything else. */
+/** PCM 8/16/24-bit or float32, mono or stereo, WAVE_FORMAT_EXTENSIBLE; null for anything else or anything malformed. */
 export function parseWav(bytes: Uint8Array): WavInfo | null {
   if (bytes.length < 12) return null
   const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
   const tag = (offset: number) => String.fromCharCode(bytes[offset]!, bytes[offset + 1]!, bytes[offset + 2]!, bytes[offset + 3]!)
   if (tag(0) !== 'RIFF' || tag(8) !== 'WAVE') return null
   let format = 0
+  let channels = 0
   let bits = 0
   let byteRate = 0
   let blockAlign = 0
@@ -49,11 +50,16 @@ export function parseWav(bytes: Uint8Array): WavInfo | null {
     const size = view.getUint32(offset + 4, true)
     const body = offset + 8
     if (id === 'fmt ' && size >= 16) {
+      if (body + 16 > bytes.length) return null
       format = view.getUint16(body, true)
+      channels = view.getUint16(body + 2, true)
       byteRate = view.getUint32(body + 8, true)
       blockAlign = view.getUint16(body + 12, true)
       bits = view.getUint16(body + 14, true)
-      if (format === 0xfffe && size >= 26) format = view.getUint16(body + 24, true)
+      if (format === 0xfffe && size >= 26) {
+        if (body + 26 > bytes.length) return null
+        format = view.getUint16(body + 24, true)
+      }
     } else if (id === 'data') {
       dataStart = body
       dataBytes = Math.min(size, bytes.length - body)
@@ -63,17 +69,34 @@ export function parseWav(bytes: Uint8Array): WavInfo | null {
   }
   const isPcm = format === 1 && (bits === 8 || bits === 16 || bits === 24)
   const isFloat = format === 3 && bits === 32
-  if (dataStart < 0 || byteRate === 0 || blockAlign === 0 || (!isPcm && !isFloat)) return null
-  const sampleAt = (frame: number): number => {
-    const at = dataStart + frame * blockAlign
+  if (dataStart < 0 || byteRate === 0 || (!isPcm && !isFloat)) return null
+  const bytesPerSample = bits / 8
+  if ((channels !== 1 && channels !== 2) || blockAlign < channels * bytesPerSample) return null
+  const readSample = (at: number): number => {
     if (isFloat) return view.getFloat32(at, true)
     if (bits === 8) return (view.getUint8(at) - 128) / 128
     if (bits === 16) return view.getInt16(at, true) / 32768
     return (view.getUint8(at) | (view.getUint8(at + 1) << 8) | (view.getInt8(at + 2) << 16)) / 8388608
   }
+  // The loudest channel of the frame; non-finite samples are skipped so one NaN cannot blank the waveform.
+  const sampleAt = (frame: number): number => {
+    let loudest = 0
+    for (let c = 0; c < channels; c++) {
+      const level = Math.abs(readSample(dataStart + frame * blockAlign + c * bytesPerSample))
+      if (Number.isFinite(level)) loudest = Math.max(loudest, level)
+    }
+    return loudest
+  }
+  let peaks: number[]
+  try {
+    peaks = peaksOf(Math.floor(dataBytes / blockAlign), sampleAt)
+  } catch (error) {
+    if (error instanceof RangeError) return null
+    throw error
+  }
   return {
     durationMs: Math.round((dataBytes / byteRate) * 1000),
-    peaks: peaksOf(Math.floor(dataBytes / blockAlign), sampleAt),
+    peaks,
   }
 }
 

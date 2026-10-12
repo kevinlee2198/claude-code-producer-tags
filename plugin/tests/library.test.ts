@@ -4,8 +4,11 @@ import { CATALOG } from '../hooks/catalog'
 import { allowedExts, basename, extOf, padSounds, parseWav, resolveSound, slugify, soundOptions } from '../hooks/library'
 import type { ImportedSound } from '../types'
 
-/** A WAV with `frames` frames of the given format, optionally with a LIST chunk (odd size) before data. */
-function wav(options: { format?: number; bits: number; channels?: number; rate?: number; frames: number; list?: boolean; extensible?: boolean }): Uint8Array {
+/**
+ * A WAV with `frames` frames of the given format, optionally with a LIST chunk (odd size) before data.
+ * Samples alternate in sign; `right` sets the magnitude of channel 1 when present; `nan` plants a NaN float at frame 0.
+ */
+function wav(options: { format?: number; bits: number; channels?: number; rate?: number; frames: number; list?: boolean; extensible?: boolean; right?: number; nan?: boolean }): Uint8Array {
   const channels = options.channels ?? 1
   const rate = options.rate ?? 22050
   const blockAlign = channels * (options.bits / 8)
@@ -27,12 +30,16 @@ function wav(options: { format?: number; bits: number; channels?: number; rate?:
   tag(offset, 'data'); view.setUint32(offset + 4, dataBytes, true)
   const data = offset + 8
   for (let f = 0; f < options.frames; f++) {
-    const value = f < options.frames / 2 ? 0.5 : 0.25
-    const at = data + f * blockAlign
-    if ((options.format ?? 1) === 3) view.setFloat32(at, value, true)
-    else if (options.bits === 8) view.setUint8(at, Math.round(128 + value * 127))
-    else if (options.bits === 16) view.setInt16(at, Math.round(value * 32767), true)
-    else { const v = Math.round(value * 8388607); view.setUint8(at, v & 0xff); view.setUint8(at + 1, (v >> 8) & 0xff); view.setInt8(at + 2, v >> 16) }
+    const sign = f % 2 === 0 ? 1 : -1
+    for (let c = 0; c < channels; c++) {
+      const magnitude = c === 1 && options.right !== undefined ? options.right : f < options.frames / 2 ? 0.5 : 0.25
+      const value = sign * magnitude
+      const at = data + f * blockAlign + c * (options.bits / 8)
+      if ((options.format ?? 1) === 3) view.setFloat32(at, options.nan && f === 0 && c === 0 ? NaN : value, true)
+      else if (options.bits === 8) view.setUint8(at, Math.round(128 + value * 127))
+      else if (options.bits === 16) view.setInt16(at, Math.round(value * 32767), true)
+      else { const v = Math.round(value * 8388607); view.setUint8(at, v & 0xff); view.setUint8(at + 1, (v >> 8) & 0xff); view.setInt8(at + 2, v >> 16) }
+    }
   }
   return new Uint8Array(view.buffer)
 }
@@ -53,9 +60,30 @@ describe('parseWav', () => {
       expect(info?.peaks[63]).toBe(0.5)
     })
   }
+  test('stereo peaks follow the louder right channel', () => {
+    const info = parseWav(wav({ bits: 16, channels: 2, frames: 22050, right: 0.9 }))
+    expect(info?.peaks.every(p => p === 1)).toBe(true)
+  })
+  test('float32 with a NaN sample still normalises the waveform', () => {
+    const info = parseWav(wav({ format: 3, bits: 32, frames: 22050, nan: true }))
+    expect(info?.peaks[0]).toBe(1)
+    expect(info?.peaks.every(Number.isFinite)).toBe(true)
+  })
   test('not a WAV, or an unsupported format', () => {
     expect(parseWav(new Uint8Array([1, 2, 3]))).toBeNull()
     expect(parseWav(wav({ format: 2, bits: 4, frames: 0 }))).toBeNull()
+  })
+  test('more than two channels is unsupported', () => {
+    expect(parseWav(wav({ bits: 16, channels: 6, frames: 100 }))).toBeNull()
+  })
+  test('a truncated fmt chunk is rejected, not thrown', () => {
+    const truncated = wav({ bits: 16, frames: 10 }).slice(0, 28)
+    expect(parseWav(truncated)).toBeNull()
+  })
+  test('a blockAlign smaller than the sample width is rejected, not thrown', () => {
+    const bad = wav({ bits: 16, frames: 100 })
+    new DataView(bad.buffer).setUint16(32, 1, true)
+    expect(parseWav(bad)).toBeNull()
   })
 })
 
