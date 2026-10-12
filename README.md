@@ -77,7 +77,7 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
   |---|---|
   | macOS | wav, mp3, m4a, aiff |
   | Windows / WSL | wav, mp3 |
-  | Linux | depends on the player: wav and aiff with `pw-play` or `paplay`; every format with `ffplay` |
+  | Linux | depends on the player: wav and aiff with `pw-play` or `paplay`; every format with `ffplay`; wav only with `aplay` |
 
 - **Size:** up to 4 MB. Clips longer than 15 s are cut off at 15 s.
 - **Storage:** the file is copied to `~/.claude/producer-tags/sounds/` (or under `CLAUDE_CONFIG_DIR`), so moving the original does no harm.
@@ -97,6 +97,7 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
 - **Native Windows (not WSL):** untested. If Claude Code runs commands through a PowerShell tool there, Bash triggers may not fire.
 - **Band timing:** the band and captions are timed from when playback starts. On Windows and WSL, playback waits for the file to open, which can take up to about 1.5 s on a cold start, so the band appears a moment after the command finishes.
 - **Badge replay:** clicking the ▶ on a transcript badge needs Claude Code's fullscreen mode. The pane's ▶ works everywhere.
+- **Custom patterns:** a pattern with several unbounded wildcards in a row, like `.*.*.*`, can slow Claude Code on long commands. Keep patterns simple.
 - **Several sessions:** with more than one Claude Code session open, the last settings change wins.
 
 ## Privacy

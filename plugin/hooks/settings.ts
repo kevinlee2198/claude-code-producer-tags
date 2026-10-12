@@ -10,19 +10,24 @@ export function defaultSettings(): Settings {
   return { version: 1, muted: false, volume: DEFAULT_VOLUME, triggers, custom: [], studio: { band: true, badges: true } }
 }
 
-/** Whether a quantifier starts at `at`: `+`, `*` or `{n,}` (unbounded), or `?`/`{n}`/`{n,m}` (bounded). */
-function quantifierAt(pattern: string, at: number): { isUnbounded: boolean; isPresent: boolean } {
+/**
+ * Whether a quantifier starts at `at`. A quantifier is unbounded for `+`, `*` and `{n,}`, and a
+ * repeat for those plus `{n,m}` with m above 1; `?` and `{n}` count as neither.
+ */
+function quantifierAt(pattern: string, at: number): { isUnbounded: boolean; isRepeat: boolean } {
   const c = pattern[at]
-  if (c === '+' || c === '*') return { isUnbounded: true, isPresent: true }
-  if (c === '?') return { isUnbounded: false, isPresent: true }
-  if (c !== '{') return { isUnbounded: false, isPresent: false }
-  const braces = /^\{\d+(,\d*)?\}/.exec(pattern.slice(at))
-  return braces === null ? { isUnbounded: false, isPresent: false } : { isUnbounded: braces[0].endsWith(',}'), isPresent: true }
+  if (c === '+' || c === '*') return { isUnbounded: true, isRepeat: true }
+  if (c !== '{') return { isUnbounded: false, isRepeat: false }
+  const braces = /^\{\d+,(\d*)\}/.exec(pattern.slice(at))
+  if (braces === null) return { isUnbounded: false, isRepeat: false }
+  const isUnbounded = braces[1] === ''
+  return { isUnbounded, isRepeat: isUnbounded || Number(braces[1]) > 1 }
 }
 
 /**
- * A heuristic for patterns that can backtrack catastrophically: a group holding an unbounded
- * repeat or an alternation that is itself repeated without bound, like (a+)+, (.*)*x or (a|aa)+.
+ * A heuristic for patterns that can backtrack catastrophically: a group holding a repeat or an
+ * alternation (at any depth) that is itself repeated without bound, like (a+)+, (.*)*x, (a|aa)+
+ * or ((a|aa))+. It cannot see polynomial blowup such as .*.*.*x.
  */
 function canHang(pattern: string): boolean {
   const groups: { hasRepeat: boolean; hasAlternation: boolean }[] = [{ hasRepeat: false, hasAlternation: false }]
@@ -45,8 +50,9 @@ function canHang(pattern: string): boolean {
       const parent = groups[groups.length - 1]!
       const quantifier = quantifierAt(pattern, i + 1)
       if (quantifier.isUnbounded && (closed.hasRepeat || closed.hasAlternation)) return true
-      if (closed.hasRepeat || quantifier.isUnbounded) parent.hasRepeat = true
-    } else if (quantifierAt(pattern, i).isUnbounded) {
+      if (closed.hasRepeat || quantifier.isRepeat) parent.hasRepeat = true
+      if (closed.hasAlternation) parent.hasAlternation = true
+    } else if (quantifierAt(pattern, i).isRepeat) {
       top.hasRepeat = true
     }
   }
@@ -69,7 +75,7 @@ export const IMPORTS_KEY = 'imports'
 export function validatePattern(pattern: string): string | null {
   if (pattern.trim().length === 0) return 'Enter a pattern.'
   if (pattern.length > MAX_PATTERN_LENGTH) return `Patterns are at most ${MAX_PATTERN_LENGTH} characters.`
-  if (canHang(pattern)) return 'That pattern can hang; avoid nested repeats like (a+)+.'
+  if (canHang(pattern)) return 'That pattern can hang; avoid repeating a group that holds a repeat or |, like (a+)+ or (a|b)+.'
   return compilePattern(pattern) === null ? 'That is not a valid regular expression.' : null
 }
 

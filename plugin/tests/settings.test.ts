@@ -48,8 +48,10 @@ describe('normalizeSettings', () => {
     expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
   })
   test('a stored hang-prone pattern loads invalid and disabled', () => {
-    const raw = { custom: [{ id: 'h', pattern: '(.*)*x', outcome: 'any', sound: 'pt:riser', enabled: true }] }
-    expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
+    for (const pattern of ['(.*)*x', '((a|aa))+$']) {
+      const raw = { custom: [{ id: 'h', pattern, outcome: 'any', sound: 'pt:riser', enabled: true }] }
+      expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
+    }
   })
   test('settings from a newer release keep every field this release understands', () => {
     const raw = { version: 2, muted: true, volume: 30, futureThing: { x: 1 }, triggers: { 'git.push': { enabled: false, sound: 'pt:riser', color: 'red' } } }
@@ -75,9 +77,11 @@ describe('normalizeImports and validatePattern', () => {
     expect(validatePattern('docker compose up')).toBeNull()
   })
   test('hang-prone patterns are rejected, ordinary ones pass', () => {
-    const hang = 'That pattern can hang; avoid nested repeats like (a+)+.'
-    for (const pattern of ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$']) expect(validatePattern(pattern)).toBe(hang)
-    for (const pattern of ['docker compose up', 'npm (run )?build', '^deploy\\b', '(git|hg) push', 'a+b*']) expect(validatePattern(pattern)).toBeNull()
+    const hang = 'That pattern can hang; avoid repeating a group that holds a repeat or |, like (a+)+ or (a|b)+.'
+    const hanging = ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$', '((a|aa))+$', '(?:(a|aa))+$', '(a{1,5})+$', '(a{2,})+']
+    for (const pattern of hanging) expect(validatePattern(pattern)).toBe(hang)
+    const fine = ['docker compose up', 'npm (run )?build', '^deploy\\b', '(git|hg) push', 'git (commit|push)', 'a+b*', '(ab){2}', 'a{1,5}', '(x)?y', '[(]+']
+    for (const pattern of fine) expect(validatePattern(pattern)).toBeNull()
     expect(compilePattern('(.*)*x')).toBeNull()
   })
   test('known sounds are the catalog plus imports', () => {
