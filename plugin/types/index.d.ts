@@ -95,10 +95,16 @@ export type PaneDraft = {
   message: PaneMessage | null
 }
 
+/**
+ * The settings type under a name of its own: inside `declare module 'claude-code'` below, `Settings`
+ * would name the engine's settings type instead, and the settings atom would lose its type.
+ */
+export type ProducerTagsSettings = Settings
+
 declare module 'claude-code' {
   interface PluginState {
     'producer-tags': {
-      settings: Settings | null
+      settings: ProducerTagsSettings | null
       imports: ImportedSound[] | null
       nowPlaying: NowPlaying | null
       bandFrame: number

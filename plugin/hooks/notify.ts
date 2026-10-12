@@ -1,28 +1,25 @@
-import { update } from 'claude-code'
-import type { EngineInterface } from 'claude-code'
-
-import { toastedAtom } from './state'
+import type { Host } from './host'
 
 export type ToastCause = 'no-player' | 'playback-failed' | 'corrupt-settings' | `missing:${string}`
 
 /** Shows `text` the first time `cause` happens in this session, never again. */
-export async function toastOnce($: EngineInterface, cause: ToastCause, text: string): Promise<void> {
+export async function toastOnce(host: Host, cause: ToastCause, text: string): Promise<void> {
   let isFirst = false
-  await update($, toastedAtom, list => {
+  await host.state.toasted.update(list => {
     isFirst = !list.includes(cause)
     return isFirst ? [...list, cause] : list
   })
-  if (isFirst) $.ui.toast(text)
+  if (isFirst) host.toast(text)
 }
 
-export function logError($: EngineInterface, where: string, error: unknown): void {
+export function logError(host: Host, where: string, error: unknown): void {
   const text = error instanceof Error ? error.message : String(error)
-  $.ui.log(`producer-tags: ${where}: ${text}`, { to: 'debug' })
+  host.log(`producer-tags: ${where}: ${text}`)
 }
 
 /** Starts work without awaiting it; a failure goes to the debug log, never up (spec §10). */
-export function act($: EngineInterface, where: string, work: () => Promise<unknown>): void {
+export function act(host: Host, where: string, work: () => Promise<unknown>): void {
   void Promise.resolve()
     .then(work)
-    .catch(error => logError($, where, error))
+    .catch(error => logError(host, where, error))
 }

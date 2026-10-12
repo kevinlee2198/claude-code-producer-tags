@@ -1,17 +1,13 @@
-import { atom } from 'claude-code'
-
 import type { PaneDraft } from '../types'
 import { FALLBACK_SOUND } from './constants'
 
-export const settingsAtom = atom({ plugin: 'producer-tags', key: 'settings' } as const, null)
-export const importsAtom = atom({ plugin: 'producer-tags', key: 'imports' } as const, null)
-export const nowPlayingAtom = atom({ plugin: 'producer-tags', key: 'nowPlaying' } as const, null)
-export const bandFrameAtom = atom({ plugin: 'producer-tags', key: 'bandFrame' } as const, 0)
-export const captionWordAtom = atom({ plugin: 'producer-tags', key: 'captionWord' } as const, -1)
-export const taggedAtom = atom({ plugin: 'producer-tags', key: 'tagged' } as const, null)
-export const platformAtom = atom({ plugin: 'producer-tags', key: 'platform' } as const, null)
-export const cooldownsAtom = atom({ plugin: 'producer-tags', key: 'cooldowns' } as const, {})
-export const toastedAtom = atom({ plugin: 'producer-tags', key: 'toasted' } as const, [])
+// Each hook file declares the atoms it reads or writes in a const of its own: the engine lists a
+// module's state from `atom({ plugin, key } as const, initial)` calls written in that file, and
+// refuses an imported atom. Those declarations take their initial values from here, so every
+// file reads the same value before anything is written.
+
+/** `captionWord` before a clip has a lit word. */
+export const NO_WORD = -1
 
 export const EMPTY_DRAFT: PaneDraft = {
   isAdding: false,
@@ -21,4 +17,3 @@ export const EMPTY_DRAFT: PaneDraft = {
   importPath: '',
   message: null,
 }
-export const paneDraftAtom = atom({ plugin: 'producer-tags', key: 'paneDraft' } as const, EMPTY_DRAFT)
