@@ -29,8 +29,9 @@ export function validatePattern(pattern: string): string | null {
   return compilePattern(pattern) === null ? 'That is not a valid regular expression.' : null
 }
 
-export const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value)
+export function isRecord(value: unknown): value is Record<string, unknown> {
+  return typeof value === 'object' && value !== null && !Array.isArray(value)
+}
 
 /** Version 1 is the first stored shape; later versions convert to it here, before the merge. */
 export function migrate(raw: unknown): unknown {
@@ -86,8 +87,8 @@ export function normalizeSettings(raw: unknown, known: ReadonlySet<SoundId>): { 
       triggers,
       custom,
       studio: {
-        band: typeof studio.band === 'boolean' ? studio.band : true,
-        badges: typeof studio.badges === 'boolean' ? studio.badges : true,
+        band: typeof studio.band === 'boolean' ? studio.band : base.studio.band,
+        badges: typeof studio.badges === 'boolean' ? studio.badges : base.studio.badges,
       },
     },
     isCorrupt: false,
