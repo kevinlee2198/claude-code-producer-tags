@@ -1,7 +1,7 @@
 {
   "seed": 20261010,
   "tags": [
-    { "id": "anthropic-trust", "caption": "If Anthropic don't trust you, I'm gon' shoot you", "say": "If Anthropic don't trust you, I'm gonna shoot you", "riff": "Metro Boomin", "preset": "dark" },
+    { "id": "anthropic-trust", "caption": "If Anthropic don't trust you, I'm gon' shoot you", "say": "If Anthropic don't trust you, I'm gonna shoot you", "riff": "Metro Boomin", "preset": "tag" },
     { "id": "just-merged", "caption": "Oh Lord, Claude just merged another one", "riff": "Jetsonmade", "preset": "hype" },
     { "id": "did-it-again", "caption": "Claude Code, you did it again", "riff": "Mike WiLL Made-It", "preset": "tag" },
     { "id": "tests-passin", "caption": "We got tests passin' on the track", "say": "We got tests passing on the track", "riff": "original", "preset": "hype" },
