@@ -2,6 +2,7 @@ import type { CustomTrigger, ImportedSound, Outcome, Settings, SoundId, TriggerI
 import { CATALOG } from './catalog'
 import { DEFAULT_VOLUME, FALLBACK_SOUND, MAX_CUSTOM, MAX_PATTERN_LENGTH, TRIGGERS } from './constants'
 import type { Host } from './host'
+import { compileMatcher, type Matcher } from './match'
 import { toastOnce } from './notify'
 
 export function defaultSettings(): Settings {
@@ -10,57 +11,11 @@ export function defaultSettings(): Settings {
   return { version: 1, muted: false, volume: DEFAULT_VOLUME, triggers, custom: [], studio: { band: true, badges: true } }
 }
 
-/** Whether a quantifier starts at `at`: `+`, `*` or `{n,}` (unbounded), or `?`/`{n}`/`{n,m}` (bounded). */
-function quantifierAt(pattern: string, at: number): { isUnbounded: boolean; isPresent: boolean } {
-  const c = pattern[at]
-  if (c === '+' || c === '*') return { isUnbounded: true, isPresent: true }
-  if (c === '?') return { isUnbounded: false, isPresent: true }
-  if (c !== '{') return { isUnbounded: false, isPresent: false }
-  const braces = /^\{\d+(,\d*)?\}/.exec(pattern.slice(at))
-  return braces === null ? { isUnbounded: false, isPresent: false } : { isUnbounded: braces[0].endsWith(',}'), isPresent: true }
-}
-
-/**
- * A heuristic for patterns that can backtrack catastrophically: a group holding an unbounded
- * repeat or an alternation that is itself repeated without bound, like (a+)+, (.*)*x or (a|aa)+.
- */
-function canHang(pattern: string): boolean {
-  const groups: { hasRepeat: boolean; hasAlternation: boolean }[] = [{ hasRepeat: false, hasAlternation: false }]
-  let inClass = false
-  for (let i = 0; i < pattern.length; i++) {
-    const c = pattern[i]!
-    const top = groups[groups.length - 1]!
-    if (c === '\\') {
-      i++
-    } else if (inClass) {
-      if (c === ']') inClass = false
-    } else if (c === '[') {
-      inClass = true
-    } else if (c === '(') {
-      groups.push({ hasRepeat: false, hasAlternation: false })
-    } else if (c === '|') {
-      top.hasAlternation = true
-    } else if (c === ')' && groups.length > 1) {
-      const closed = groups.pop()!
-      const parent = groups[groups.length - 1]!
-      const quantifier = quantifierAt(pattern, i + 1)
-      if (quantifier.isUnbounded && (closed.hasRepeat || closed.hasAlternation)) return true
-      if (closed.hasRepeat || quantifier.isUnbounded) parent.hasRepeat = true
-    } else if (quantifierAt(pattern, i).isUnbounded) {
-      top.hasRepeat = true
-    }
-  }
-  return false
-}
-
-/** A custom pattern as a case-insensitive regex, or null when it is empty, too long, hang-prone or invalid. */
-export function compilePattern(pattern: string): RegExp | null {
-  if (pattern.length === 0 || pattern.length > MAX_PATTERN_LENGTH || canHang(pattern)) return null
-  try {
-    return new RegExp(pattern, 'i')
-  } catch {
-    return null
-  }
+/** A custom pattern as a linear-time, case-insensitive matcher, or null when it is empty, too long, unsupported or invalid. */
+export function compilePattern(pattern: string): Matcher | null {
+  if (pattern.length === 0 || pattern.length > MAX_PATTERN_LENGTH) return null
+  const result = compileMatcher(pattern)
+  return result.ok ? result.matcher : null
 }
 
 export const SETTINGS_KEY = 'settings'
@@ -69,8 +24,9 @@ export const IMPORTS_KEY = 'imports'
 export function validatePattern(pattern: string): string | null {
   if (pattern.trim().length === 0) return 'Enter a pattern.'
   if (pattern.length > MAX_PATTERN_LENGTH) return `Patterns are at most ${MAX_PATTERN_LENGTH} characters.`
-  if (canHang(pattern)) return 'That pattern can hang; avoid nested repeats like (a+)+.'
-  return compilePattern(pattern) === null ? 'That is not a valid regular expression.' : null
+  const result = compileMatcher(pattern)
+  if (result.ok) return null
+  return result.error === 'syntax' ? 'That is not a valid regular expression.' : `Custom triggers don't support that (${result.detail}).`
 }
 
 export function isRecord(value: unknown): value is Record<string, unknown> {
