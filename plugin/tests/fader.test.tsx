@@ -31,4 +31,31 @@ describe('fader', () => {
       expect(await (await $.ui.mount({ ...PANE, surface })).find({ key: 'fader' }), surface).toBeUndefined()
     }
   })
+
+  test('the drawn line fills its 24-column region exactly, at any volume', async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+    await ui.resize({ columns: 24, rows: 1, in: 'fader' })
+    for (const volume of [0, 80, 100]) {
+      const s = w.state.get('settings') as Settings
+      w.state.set('settings', { ...s, volume })
+      await ui.redraw()
+      const box = await ui.find({ type: 'Box', in: 'fader' } as never)
+      expect([...(box?.text ?? '')].length, `volume ${volume}`).toBe(24)
+    }
+  })
+
+  test('a malformed fader message changes nothing and logs nothing', async ($, on) => {
+    const w = world(on)
+    await $.session.start(START)
+    const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
+        await ui.post({ volume: 30, isFinal: false }, { in: 'fader' } as never)
+    expect((w.state.get('settings') as Settings).volume, 'a good message lands').toBe(30)
+    for (const data of [null, { volume: Number.NaN }, 'x']) {
+      await ui.post(data as never, { in: 'fader' } as never)
+      expect((w.state.get('settings') as Settings).volume).toBe(30)
+    }
+    expect(w.logs).toEqual([])
+  })
 })

@@ -9,7 +9,7 @@ const clamp = (n: number) => Math.max(0, Math.min(100, Math.round(n)))
 const Fader: ClientModule<Props, State> = (props, surface) => {
   const { Box, Text } = surface.elements
   const state = surface.state ?? { volume: props.volume, isDragging: false }
-  const width = Math.max(4, surface.columns - 5)
+  const width = Math.max(4, surface.columns - 6)
 
   // Set again on every call (each replaces the last), so they read this call's props.
   surface.onPointer(event => {

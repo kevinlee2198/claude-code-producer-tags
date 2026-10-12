@@ -88,6 +88,20 @@ function triggerRows(v: View): JSX.Element[] {
   })
 }
 
+const MESSAGE_COLOR = { ok: 'success', warn: 'warning', error: 'error' } as const
+
+/** The pane's one message line, drawn where its `where` says (custom form or imports). */
+function messageLine(v: View, where: 'custom' | 'import'): JSX.Element | null {
+  const { Box, Text } = v.els
+  const message = v.draft.message
+  if (message === null || message.where !== where) return null
+  return (
+    <Box key="pane-message">
+      <Text color={MESSAGE_COLOR[message.kind]}>{message.text}</Text>
+    </Box>
+  )
+}
+
 function customSection(v: View): JSX.Element {
   const { Box, Button, Input, Select, Text } = v.els
   let footer: JSX.Element
@@ -129,6 +143,7 @@ function customSection(v: View): JSX.Element {
         </Box>
       ))}
       {footer}
+      {messageLine(v, 'custom')}
     </Box>
   )
 }
@@ -155,11 +170,7 @@ function importSection(v: View): JSX.Element {
           <Button key={`impdel-${sound.id}`} plain label="✕" onPress={() => act(v.host, 'delete', () => removeImport(v.host, sound.id))} />
         </Box>
       ))}
-      {v.draft.message !== null && (
-        <Box key="pane-message">
-          <Text color={v.draft.message.kind === 'error' ? 'error' : 'success'}>{v.draft.message.text}</Text>
-        </Box>
-      )}
+      {messageLine(v, 'import')}
     </Box>
   )
 }

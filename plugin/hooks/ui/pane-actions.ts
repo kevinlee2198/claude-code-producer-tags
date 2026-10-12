@@ -54,13 +54,22 @@ export async function saveCustom(host: Host, submitted: string | null): Promise<
   const pattern = (submitted ?? draft.customPattern).trim()
   const error = validatePattern(pattern)
   if (error !== null) {
-    await setDraft(host, d => ({ ...d, customPattern: pattern, message: { kind: 'error', text: error } }))
+    await setDraft(host, d => ({ ...d, customPattern: pattern, message: { kind: 'error', where: 'custom', text: error } }))
     return
   }
-  await changeSettings(host, s =>
-    addCustom(s, { id: newCustomId(s.custom), pattern, outcome: draft.customOutcome, sound: draft.customSound, enabled: true, isInvalid: false }),
-  )
-  await setDraft(host, () => ({ ...EMPTY_DRAFT, message: { kind: 'ok', text: `Added /${pattern}/.` } }))
+  let failure: string | null = null
+  await changeSettings(host, s => {
+    if (s.custom.some(c => c.pattern === pattern)) failure = 'That pattern is already a trigger.'
+    else if (s.custom.length >= MAX_CUSTOM) failure = `${MAX_CUSTOM} custom triggers is the limit.`
+    else return addCustom(s, { id: newCustomId(s.custom), pattern, outcome: draft.customOutcome, sound: draft.customSound, enabled: true, isInvalid: false })
+    return s
+  })
+  if (failure !== null) {
+    const text: string = failure
+    await setDraft(host, d => ({ ...d, customPattern: pattern, message: { kind: 'error', where: 'custom', text } }))
+    return
+  }
+  await setDraft(host, () => ({ ...EMPTY_DRAFT, message: { kind: 'ok', where: 'custom', text: `Added /${pattern}/.` } }))
 }
 
 export async function runImport(host: Host, submitted: string | null): Promise<void> {
@@ -68,12 +77,22 @@ export async function runImport(host: Host, submitted: string | null): Promise<v
   const result = await importSound(host, path)
   await setDraft(host, d =>
     result.ok
-      ? { ...d, importPath: '', message: { kind: 'ok', text: result.warning ?? `Imported "${result.sound.name}".` } }
-      : { ...d, importPath: path, message: { kind: 'error', text: result.error } },
+      ? {
+          ...d,
+          importPath: '',
+          message:
+            result.warning == null
+              ? { kind: 'ok', where: 'import', text: `Imported "${result.sound.name}".` }
+              : { kind: 'warn', where: 'import', text: result.warning },
+        }
+      : { ...d, importPath: path, message: { kind: 'error', where: 'import', text: result.error } },
   )
 }
 
 export async function removeImport(host: Host, id: SoundId): Promise<void> {
-  await deleteImport(host, id)
-  await setDraft(host, d => ({ ...d, message: { kind: 'ok', text: 'Removed.' } }))
+  const isRemoved = await deleteImport(host, id)
+  await setDraft(host, d => ({
+    ...d,
+    message: isRemoved ? { kind: 'ok', where: 'import', text: 'Removed.' } : { kind: 'error', where: 'import', text: 'Could not remove that sound.' },
+  }))
 }

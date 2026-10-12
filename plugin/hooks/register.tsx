@@ -286,8 +286,8 @@ export const register: Register = on => {
     if (e.requestId !== PANE_ID || e.element !== 'fader') return next(e)
     const engine = host ?? hostOf($)
     try {
-      const data = e.data as { volume?: unknown; isFinal?: unknown }
-      if (typeof data.volume === 'number') {
+      const data = e.data as { volume?: unknown; isFinal?: unknown } | null
+      if (data != null && typeof data === 'object' && typeof data.volume === 'number' && Number.isFinite(data.volume)) {
         const volume = data.volume
         await changeSettings(engine, s => setVolume(s, volume), { persist: data.isFinal === true })
       }

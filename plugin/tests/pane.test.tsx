@@ -142,6 +142,7 @@ describe('importing through the pane', () => {
       await ui.input({ key: 'import-path', text: path })
       expect(await ui.find({ type: 'Text', text: message }), path).toBeDefined()
     }
+    expect((await ui.find({ key: 'imports' }))?.text).toContain('Files must be 4 MB or smaller.')
   })
 
   test('a failed copy keeps the original with a warning, and deleting it removes nothing from disk', async ($, on) => {
@@ -171,5 +172,20 @@ describe('other surfaces', () => {
     expect(await ui.find({ text: 'Open /tags in the terminal or desktop app to edit.' })).toBeDefined()
     await ui.press({ key: 'mute' })
     expect(settingsOf(w).muted).toBe(true)
+  })
+})
+
+describe('where pane messages draw', () => {
+  test('a custom-form error shows in the custom section, not under Import', async ($, on) => {
+    const { ui } = await openOn($, on, 'terminal')
+    await ui.press({ key: 'custom-add' })
+    await ui.input({ key: 'custom-pattern', text: '(' })
+    expect((await ui.find({ key: 'custom' }))?.text).toContain('That is not a valid regular expression.')
+    expect((await ui.find({ key: 'imports' }))?.text).not.toContain('That is not a valid regular expression.')
+  })
+  test('the copy warning is drawn in the warning colour', async ($, on) => {
+    const { ui } = await openOn($, on, 'terminal', { files: { '/a/x.wav': { base64: EMPTY_WAV } }, runExit: argv => (argv[0] === 'sh' ? 1 : 0) })
+    await ui.input({ key: 'import-path', text: '/a/x.wav' })
+    expect((await ui.find({ type: 'Text', text: /Could not copy the file/ }))?.props.color).toBe('warning')
   })
 })

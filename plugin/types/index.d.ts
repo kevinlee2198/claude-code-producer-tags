@@ -84,7 +84,7 @@ export type LinuxPlayer = 'pw-play' | 'paplay' | 'ffplay' | 'aplay'
 export type PlayerName = 'audio' | 'powershell' | LinuxPlayer | 'none'
 export type Platform = { os: OsName; player: PlayerName }
 
-export type PaneMessage = { kind: 'ok' | 'error'; text: string }
+export type PaneMessage = { kind: 'ok' | 'warn' | 'error'; where: 'custom' | 'import'; text: string }
 
 export type PaneDraft = {
   isAdding: boolean
