@@ -42,6 +42,8 @@ The repository is both the marketplace and the mod.
 
 ```
 .claude-plugin/marketplace.json     marketplace listing (source ./plugin)
+.github/workflows/ci.yml            typecheck + generator tests + plugin validate/test
+.gitignore
 package.json, tsconfig.json         dev-only: TypeScript for type-checking
 typings/claude-code.d.ts            pinned API snapshot (2.1.296) for tsc in CI; not shipped
 plugin/
@@ -52,6 +54,7 @@ plugin/
   hooks/notify.ts, codec.ts         toastOnce/logError/act; base64
   hooks/shell.ts                    command tokenizer/segmenter (pure)
   hooks/triggers.ts                 event → trigger hit (pure)
+  hooks/stage.ts                    isLive / isOnStage (pure)
   hooks/pipeline.ts                 settings/cooldown/claim → play; finish; mute
   hooks/platform.ts, player.ts      OS detection; playback routing
   hooks/library.ts                  bundled + imported sounds, WAV parsing, peaks
@@ -382,8 +385,8 @@ Imported files are kept in `<configDir>/producer-tags/sounds/`:
    - Windows reserved names get a `-1` suffix.
    - On collision, add `-2`, `-3`, and so on. Collisions are checked case-insensitively against both `imports` and the files on disk.
 4. **Copy** (`$.fs.write` writes only text). Paths always travel in env, never in the command string.
-   - mac/linux: `mkdir -p -- "$D" && cp -- "$S" "$T"`
-   - windows: `New-Item -ItemType Directory -Force -LiteralPath $env:D; Copy-Item -LiteralPath $env:S -Destination $env:T`
+   - mac/linux: `mkdir -p -- "$PT_DIR" && cp -- "$PT_SRC" "$PT_DST"`
+   - windows: `New-Item -ItemType Directory -Force -Path $env:PT_DIR; Copy-Item -LiteralPath $env:PT_SRC -Destination $env:PT_DST` (`New-Item` has no `-LiteralPath` in Windows PowerShell 5.1; the directory name is ours, so `-Path` is safe)
    - If the copy fails, the import references the original file (`isCopy: false`) and a warning is shown.
 5. **Analyze.** WAV files are parsed (below) to get `durationMs` and `peaks`. Other formats get a flat waveform, and `durationMs` is unknown: the band runs to the clip's real end, capped at 15 s.
 6. **Record.** The import is saved as `user:<slug>` in `imports`.
@@ -398,7 +401,7 @@ Imported files are kept in `<configDir>/producer-tags/sounds/`:
 
 **Deleting an import**
 
-- If `isCopy` is true, the file is removed: `rm -- "$T"` on mac/linux, `Remove-Item -LiteralPath $env:T` on Windows.
+- If `isCopy` is true, the file is removed: `rm -f -- <file>` (argv, no shell) on mac/linux, `Remove-Item -LiteralPath $env:PT_DST` on Windows.
 - The entry is removed from `imports`.
 - Every trigger that used it goes back to its default sound.
 

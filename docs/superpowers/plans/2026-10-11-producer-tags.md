@@ -17,7 +17,7 @@
 
 **Tech Stack:** TypeScript with JSX through the global `h`, in the Claude Code 2.1.296 mod API. Tests use `claude-code/testing` via `claude plugin test`. Type-checking uses `tsc` 5.6 against a vendored `claude-code.d.ts`. The generator is Python 3 (stdlib only) and renders voices with Windows SAPI via `powershell.exe` (WSL or Windows) or macOS `say`.
 
-**Spec:** `docs/superpowers/specs/2026-10-10-producer-tags-design.md` (rev 2 plus platform tiers). Read it before starting any task.
+**Spec:** `docs/superpowers/specs/2026-10-10-producer-tags-design.md` (rev 3). Read it before starting any task.
 
 ## Global Constraints
 
@@ -403,11 +403,15 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 }
 ```
 
-Vendor the API snapshot. Copy this session's types file. If that path is gone, use `plugin/.claude-plugin/types/claude-code/index.d.ts` after any session has loaded the plugin with `--plugin-dir`.
+Vendor the API snapshot. The engine writes the types file to a temp folder whose name changes every time Claude Code restarts, so never hard-code the path. Use one of these sources:
+- Load the `plugin-authoring` skill. It names this process's copy: `/tmp/claude-1000/bundled-skills/2.1.296/<hash>/plugin-authoring/types/claude-code.d.ts`.
+- Or, after Task 0's live session has loaded the spike with `--plugin-dir`, copy `.spike/.claude-plugin/types/claude-code/index.d.ts`.
+
+`claude plugin validate` and `claude plugin test` do not write it.
 
 ```bash
 mkdir -p typings
-cp /tmp/claude-1000/bundled-skills/2.1.296/8cd5c4c756297c488aa2ac5d0aaeee89/plugin-authoring/types/claude-code.d.ts typings/claude-code.d.ts
+cp "<path from above>" typings/claude-code.d.ts
 head -1 typings/claude-code.d.ts   # must print: // Written by Claude Code 2.1.296.
 npm install
 ```
