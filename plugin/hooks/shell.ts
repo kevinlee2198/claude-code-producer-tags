@@ -170,7 +170,7 @@ const WRAPPERS = new Map<string, readonly string[]>([
   ['command', []],
 ])
 
-/** Drops `VAR=x` assignments and wrapper commands with their flags (and `timeout`'s duration). */
+/** Drops `VAR=x` assignments and wrapper commands with their flags (and `timeout`'s duration). `command -v x` only probes, so nothing runs. */
 export function stripPrefixes(words: readonly string[]): string[] {
   let i = 0
   while (i < words.length) {
@@ -182,6 +182,7 @@ export function stripPrefixes(words: readonly string[]): string[] {
     const valueFlags = WRAPPERS.get(word)
     if (valueFlags === undefined) break
     i++
+    if (word === 'command' && (words[i] === '-v' || words[i] === '-V')) return []
     while (i < words.length && words[i]!.startsWith('-')) i += valueFlags.includes(words[i]!) ? 2 : 1
     if (word === 'timeout') i++
   }

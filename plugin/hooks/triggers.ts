@@ -79,9 +79,12 @@ export function isTestRunner(words: readonly string[]): boolean {
   return RUNNERS.some(runner => startsWithTokens(words, runner)) && !words.some(w => NON_RUN_FLAGS.has(w))
 }
 
-/** The runner's exit status is the command's when only `&&` follows it and nothing reads its output. */
+/** The runner's exit status is the command's when only `&&` follows it, nothing reads its output and nothing backgrounds it. */
 function isAttributable(segments: readonly Segment[], index: number): boolean {
-  for (let k = index; k < segments.length - 1; k++) if (segments[k]!.op !== '&&') return false
+  for (let k = index; k < segments.length; k++) {
+    const op = segments[k]!.op
+    if (k === segments.length - 1 ? op !== null && op !== ';' : op !== '&&') return false
+  }
   return true
 }
 

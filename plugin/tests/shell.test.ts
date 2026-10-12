@@ -54,6 +54,9 @@ describe('stripPrefixes', () => {
     expect(stripPrefixes(['time', 'nohup', 'exec', 'command', 'make', 'test'])).toEqual(['make', 'test'])
     expect(stripPrefixes(['time', '-p', 'npm', 'test'])).toEqual(['npm', 'test'])
     expect(stripPrefixes(['env', '-u', 'X', 'pytest'])).toEqual(['pytest'])
+    expect(stripPrefixes(['command', 'make', 'test'])).toEqual(['make', 'test'])
+    expect(stripPrefixes(['command', '-v', 'pytest'])).toEqual([])
+    expect(stripPrefixes(['command', '-V', 'jest'])).toEqual([])
   })
 })
 

@@ -49,6 +49,17 @@ describe('git triggers come from gitOperation', () => {
     expect(pickBashHit(s, facts('git commit -m x && git push', all))?.key).toBe('git.push')
     s.triggers['git.push'].enabled = false
     expect(pickBashHit(s, facts('git commit -m x && git push', all))?.key).toBe('git.commit')
+    expect(pickBashHit(s, facts('git merge dev && git push', git({ push: { branch: 'main' }, branch: { ref: 'dev', action: 'merged' } })))?.key).toBe('git.merge')
+  })
+  test('commit beats tests.pass, tests.pass beats command.fail', () => {
+    const s = allOn()
+    const commit = git({ commit: { sha: 'a', kind: 'committed' } })
+    expect(pickBashHit(s, facts('git commit -m x && npm test', commit))?.key).toBe('git.commit')
+    s.triggers['git.commit'].enabled = false
+    expect(pickBashHit(s, facts('git commit -m x && npm test', commit))?.key).toBe('tests.pass')
+    s.triggers['tests.pass'].enabled = false
+    expect(pickBashHit(s, facts('git commit -m x && npm test', commit))).toBeNull()
+    expect(pickBashHit(s, facts('git commit -m x', failed()))?.key).toBe('command.fail')
   })
 })
 
@@ -96,6 +107,15 @@ describe('tests.pass', () => {
     expect(testsPassed(facts('cargo test || true', ok('test result: FAILED. 1 failed')))).toBe(false)
     expect(testsPassed(facts('pytest | tail -1', ok('Traceback (most recent call last):')))).toBe(false)
     expect(testsPassed(facts('go test ./... | tail -1', ok('done')))).toBe(false)
+  })
+  test('command -v probes and backgrounded runners are not test runs', () => {
+    expect(testsPassed(facts('command -v pytest'))).toBe(false)
+    expect(testsPassed(facts('command -v jest && echo found'))).toBe(false)
+    expect(testsPassed(facts('npm test &'))).toBe(false)
+    expect(testsPassed(facts('pytest > log 2>&1 &'))).toBe(false)
+    expect(testsPassed(facts('bash -c "npm test" &'))).toBe(false)
+    expect(testsPassed(facts('npm test;'))).toBe(true)
+    expect(testsPassed(facts('npm test\n'))).toBe(true)
   })
 })
 
