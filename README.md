@@ -40,7 +40,7 @@ Answer `y` to add the marketplace, then pick a scope (user scope is the usual ch
 | → Sonnet | same | on | "Sonnet in the booth, write it down" |
 | → Haiku | same | on | "Haiku on the beat, make it quick" |
 | → other model | you switch to a model outside those families | on | "Who let this model on the track?" |
-| exit | you leave Claude Code (`/exit`, ctrl+c, ctrl+d) | on | "Claude outta here" |
+| exit | you leave Claude Code (`/exit`, ctrl+c, ctrl+d) or log out | on | "Claude outta here" |
 | session start | a session starts or resumes | off | "Claude Code, Claude Code, Claude Code-ah" |
 | turn done | Claude finishes a reply | off | "Another one" |
 | command fails | a Bash command errors | off | "Tay Keith, fix this" |
@@ -77,17 +77,17 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
   |---|---|
   | macOS | wav, mp3, m4a, aiff |
   | Windows / WSL | wav, mp3 |
-  | Linux | depends on the player: wav everywhere; mp3 and m4a with ffplay |
+  | Linux | depends on the player: wav and aiff with `pw-play` or `paplay`; every format with `ffplay` |
 
 - **Size:** up to 4 MB. Clips longer than 15 s are cut off at 15 s.
 - **Storage:** the file is copied to `~/.claude/producer-tags/sounds/` (or under `CLAUDE_CONFIG_DIR`), so moving the original does no harm.
-- **Removing:** removing an import deletes that copy and puts any trigger using it back on its default.
+- **Removing:** removing an import deletes that copy and puts any trigger using it back on its default (custom triggers that used it get the 808 boom).
 
 ## Platforms
 
 | Tier | Platform | How it plays |
 |---|---|---|
-| 1 | macOS | Claude Code's own player (`afplay`) |
+| 1 | macOS | Claude Code's own audio player (the exit outro uses `afplay`) |
 | 2 | Linux | the first of `pw-play`, `paplay`, `ffplay`, `aplay`; with none, tags show as captions only |
 | 3 | Windows, WSL | PowerShell (WPF MediaPlayer) |
 

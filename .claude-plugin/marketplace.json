@@ -1,5 +1,6 @@
 {
   "name": "producer-tags",
+  "description": "Parody producer tags for Claude Code: a tag plays when Claude commits, pushes, merges, passes tests, switches models or exits.",
   "owner": { "name": "Kevin Lee" },
   "plugins": [{ "name": "producer-tags", "source": "./plugin" }]
 }
