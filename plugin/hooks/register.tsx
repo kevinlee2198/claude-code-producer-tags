@@ -82,7 +82,15 @@ export const register: Register = on => {
     host = engine
     try {
       await loadFromStore(engine)
+    } catch (error) {
+      logError(engine, 'session.start', error)
+    }
+    try {
       await recoverStage(engine)
+    } catch (error) {
+      logError(engine, 'session.start', error)
+    }
+    try {
       muteCommand = await registerMute(engine)
     } catch (error) {
       logError(engine, 'session.start', error)
@@ -100,15 +108,27 @@ export const register: Register = on => {
   }).catch(($, e, next) => next(e))
 
   on('classic.PostModelSwitch', ($, e, next) => {
-    schedule(host ?? hostOf($), settings => hitFor(settings, modelTrigger(e)))
+    try {
+      schedule(host ?? hostOf($), settings => hitFor(settings, modelTrigger(e)))
+    } catch (error) {
+      logError(host ?? hostOf($), 'classic.PostModelSwitch', error)
+    }
     return next(e)
   })
   on('classic.SessionStart', ($, e, next) => {
-    schedule(host ?? hostOf($), settings => hitFor(settings, sessionOpenTrigger(e.source)))
+    try {
+      schedule(host ?? hostOf($), settings => hitFor(settings, sessionOpenTrigger(e.source)))
+    } catch (error) {
+      logError(host ?? hostOf($), 'classic.SessionStart', error)
+    }
     return next(e)
   })
   on('classic.Stop', ($, e, next) => {
-    schedule(host ?? hostOf($), settings => hitFor(settings, turnDoneTrigger(e.stop_hook_active === true)))
+    try {
+      schedule(host ?? hostOf($), settings => hitFor(settings, turnDoneTrigger(e.stop_hook_active === true)))
+    } catch (error) {
+      logError(host ?? hostOf($), 'classic.Stop', error)
+    }
     return next(e)
   })
 
@@ -123,6 +143,9 @@ export const register: Register = on => {
     return next(e)
   })
 
-  on('command.run', { command: 'mute' }, async ($, e, next) => (muteCommand === 'mute' ? muteAnswer(host ?? hostOf($)) : next(e)))
+  on('command.run', { command: 'mute' }, async ($, e, next) => {
+    if (muteCommand !== 'mute') return next(e)
+    return muteAnswer(host ?? hostOf($))
+  })
   on('command.run', { command: 'tags-mute' }, async $ => muteAnswer(host ?? hostOf($)))
 }

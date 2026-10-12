@@ -50,26 +50,36 @@ export async function fire(host: Host, hit: Hit, toolUseId: string | null = null
   const mine = claimFor(sound, hit.key, now, toolUseId, Math.random().toString(36).slice(2, 8))
   const token = mine.token
   if (isPreview) {
-    stopCurrent()
     await host.state.nowPlaying.update(() => mine)
   } else {
     const claimed = await host.state.nowPlaying.update(np => (isLive(np, now) ? np : mine))
     if (claimed?.token !== token) return false
-    await host.state.cooldowns.update(cooldowns => ({ ...cooldowns, [hit.key]: now }))
   }
 
   const platform = await detectPlatform(host)
   if (platform.player === 'none') await toastOnce(host, 'no-player', 'Producer Tags: no audio player found, so tags show as captions only.')
+  // Re-check after the last await that can lose the claim: a preview, /mute or a newer claim may
+  // have landed since. From here the stop, the play and `current` run with no await between them.
+  const [owner, latest] = await Promise.all([host.state.nowPlaying.read(), ensureLoaded(host)])
+  if (owner?.token !== token || latest.settings.muted) {
+    await updateIfMine(host, token, () => null)
+    return false
+  }
+  stopCurrent()
   const handle = play(host, platform, { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
   current = { token, handle }
+  if (!isPreview) await host.state.cooldowns.update(cooldowns => ({ ...cooldowns, [hit.key]: now }))
   if (!(await handle.started)) {
     await failPlayback(host, token, null)
     return false
   }
   const startedAt = await host.now()
-  await updateIfMine(host, token, np => startedEntry(np, startedAt))
-  await setTag(host, toolUseId, sound.id)
-  void handle.ended.then(result => act(host, 'finish', () => finish(host, token, toolUseId, result)))
+  const started = await updateIfMine(host, token, np => startedEntry(np, startedAt))
+  if (started?.token === token) await setTag(host, toolUseId, sound.id)
+  handle.ended.then(
+    result => act(host, 'finish', () => finish(host, token, toolUseId, result)),
+    error => logError(host, 'finish', error),
+  )
   return true
 }
 
@@ -107,7 +117,7 @@ export function schedule(host: Host, pick: (settings: Settings) => Hit | null, t
 export async function fireDetached(host: Host, hit: Hit): Promise<void> {
   const { settings, imports } = await ensureLoaded(host)
   if (settings.muted) return
-  const sound = resolveSound(hit.sound, imports) ?? resolveSound(defaultSoundFor(hit.key), imports)
+  const sound = await resolveOrFallback(host, hit, imports)
   if (sound === null) return
   await playDetached(host, await detectPlatform(host), { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
 }

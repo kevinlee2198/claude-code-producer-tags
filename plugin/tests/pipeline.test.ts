@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
-import { fire } from '../hooks/pipeline'
+import { fire, firePreview, toggleMute } from '../hooks/pipeline'
 import { LINUX_WRAPPER } from '../hooks/player'
 import { defaultSettings } from '../hooks/settings'
 import type { NowPlaying } from '../types'
@@ -262,5 +262,113 @@ describe('non-Bash triggers', () => {
     const outro = w.runs.find(r => r.argv[0] === 'sh' && r.argv[2]?.includes('afplay'))
     expect(outro?.env).toMatchObject({ PT_GAIN: '0.80' })
     expect(outro?.env?.PT_FILE).toMatch(/claude-outta\.wav$/)
+  })
+})
+
+declare function setTimeout(fn: () => void, ms: number): unknown
+const sleep = (ms: number) => new Promise<void>(resolve => setTimeout(resolve, ms))
+const commit = { key: 'git.commit' as const, sound: 'pt:anthropic-trust' as const }
+const push = { key: 'git.push' as const, sound: 'pt:did-it-again' as const }
+
+/** A fake Host whose platform read is slow and whose clips play until aborted (or `endAfter` ms). */
+function slowRig(options: { delay?: number } = {}) {
+  const host = fakeHost()
+  const active = new Set<object>()
+  const plays: string[] = []
+  const platform = { os: 'mac', player: 'audio' }
+  host.state.platform = { read: async () => (await sleep(options.delay ?? 20), platform as never), update: async () => platform as never }
+  host.play = (clip, init) =>
+    new Promise<void>(resolve => {
+      const id = {}
+      active.add(id)
+      plays.push(JSON.stringify(clip))
+      init?.signal?.addEventListener('abort', () => (active.delete(id), resolve()))
+    })
+  return { host, active, plays }
+}
+
+describe('fire, races between claim and play', () => {
+  test('a preview landing between a trigger claim and its play wins: one clip, no stale badge', async () => {
+    const { host, active } = slowRig()
+    const trigger = fire(host, commit, 'tu1')
+    await sleep(5)
+    const preview = firePreview(host, 'pt:808-boom')
+    expect([await trigger, await preview]).toEqual([false, true])
+    await sleep(5)
+    expect(active.size).toBe(1)
+    expect((await host.state.nowPlaying.read())?.key).toBe('preview')
+    expect(host.tags.get('tu1') ?? null).toBeNull()
+    await toggleMute(host)
+    await sleep(5)
+    expect(active.size).toBe(0)
+  })
+
+  test('/mute landing between a claim and its play plays nothing', async () => {
+    const { host, active } = slowRig()
+    const trigger = fire(host, commit, 'tu1')
+    await sleep(5)
+    await toggleMute(host)
+    expect(await trigger).toBe(false)
+    expect(active.size).toBe(0)
+    expect(await host.state.nowPlaying.read()).toBeNull()
+  })
+
+  test('a tag that bails at the re-check starts no cooldown', async () => {
+    const { host } = slowRig()
+    const trigger = fire(host, commit, 'tu1')
+    await sleep(5)
+    await toggleMute(host)
+    await trigger
+    expect((await host.state.cooldowns.read())['git.commit']).toBeUndefined()
+  })
+
+  test('two tags claimed together interleave at the claim: exactly one plays', async () => {
+    const { host, plays } = slowRig()
+    const slowRead = host.state.settings.read
+    host.state.settings.read = async () => (await sleep(10), slowRead())
+    const results = await Promise.all([fire(host, commit, 'a'), fire(host, push, 'b')])
+    expect(results.filter(Boolean)).toHaveLength(1)
+    expect(plays).toHaveLength(1)
+  })
+
+  test('a dropped tag starts no cooldown: it plays once the winner ends', async () => {
+    const { host, active } = slowRig({ delay: 0 })
+    expect(await fire(host, commit, 'a')).toBe(true)
+    expect(await fire(host, push, 'b')).toBe(false)
+    expect((await host.state.cooldowns.read())['git.push']).toBeUndefined()
+    await toggleMute(host)
+    await toggleMute(host)
+    await sleep(5)
+    expect(active.size).toBe(0)
+    await host.state.nowPlaying.update(() => null)
+    expect(await fire(host, push, 'b')).toBe(true)
+  })
+
+  test('a play that never starts writes no badge and toasts once', async () => {
+    const { host } = slowRig({ delay: 0 })
+    host.state.platform = { read: async () => ({ os: 'linux', player: 'aplay' }) as never, update: async () => ({}) as never }
+    host.spawn = async function* () {}
+    expect(await fire(host, commit, 'tu1')).toBe(false)
+    expect(host.tags.get('tu1') ?? null).toBeNull()
+    expect(await host.state.nowPlaying.read()).toBeNull()
+    expect(host.toasts.filter(t => t.includes('could not play'))).toHaveLength(1)
+  })
+
+  test('a preview while a trigger plays stops the old clip', async () => {
+    const { host, active, plays } = slowRig({ delay: 0 })
+    expect(await fire(host, commit, 'a')).toBe(true)
+    expect(await firePreview(host, 'pt:808-boom')).toBe(true)
+    await sleep(5)
+    expect(plays).toHaveLength(2)
+    expect(active.size).toBe(1)
+  })
+
+  test('a trigger taking over a stale entry stops the old clip first', async () => {
+    const { host, active } = slowRig({ delay: 0 })
+    expect(await fire(host, commit, 'a')).toBe(true)
+    await host.state.nowPlaying.update(np => (np === null ? np : { ...np, deadline: 0 }))
+    expect(await fire(host, push, 'b')).toBe(true)
+    await sleep(5)
+    expect(active.size).toBe(1)
   })
 })
