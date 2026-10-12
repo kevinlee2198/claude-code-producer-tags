@@ -47,8 +47,8 @@ describe('normalizeSettings', () => {
     const raw = { custom: [{ id: 'b', pattern: '(unclosed', outcome: 'success', sound: 'pt:riser', enabled: true }] }
     expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
   })
-  test('a stored hang-prone pattern loads invalid and disabled', () => {
-    for (const pattern of ['(.*)*x', '((a|aa))+$']) {
+  test('a stored pattern the matcher does not support loads invalid and disabled', () => {
+    for (const pattern of ['(a)\\1', '(?=x)y']) {
       const raw = { custom: [{ id: 'h', pattern, outcome: 'any', sound: 'pt:riser', enabled: true }] }
       expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
     }
@@ -76,14 +76,18 @@ describe('normalizeImports and validatePattern', () => {
     expect(validatePattern('(')).toBe('That is not a valid regular expression.')
     expect(validatePattern('docker compose up')).toBeNull()
   })
-  test('hang-prone patterns are rejected, ordinary ones pass', () => {
-    const hang = 'That pattern can hang; avoid repeating a group that holds a repeat or |, like (a+)+ or (a|b)+.'
-    // ((a|b)c)+ is a conservative false positive: it is safe, but the scan can't tell it from ((a|aa))+.
-    const hanging = ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$', '((a|aa))+$', '(?:(a|aa))+$', '(a{1,5})+$', '(a{2,})+', '(a+){1,50}$', '(?:a+){1,99}$', '(a|aa){1,50}$', '(a{1,2}){1,50}$', '((a|b)c)+']
-    for (const pattern of hanging) expect(validatePattern(pattern)).toBe(hang)
+  test('patterns that would hang a backtracking engine are accepted, since the matcher is linear', () => {
+    const once = ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$', '((a|aa))+$', '(?:(a|aa))+$', '(a{1,5})+$', '(a{2,})+', '(a+){1,50}$', '(?:a+){1,99}$', '(a|aa){1,50}$', '(a{1,2}){1,50}$', '((a|b)c)+', 'a+a+a+$', '.*.*.*x']
     const fine = ['docker compose up', 'npm (run )?build', '^deploy\\b', '(git|hg) push', 'git (commit|push)', 'a+b*', '(ab){2}', 'a{1,5}', '(x)?y', '[(]+', '(a+){2}$', '(a+){1,3}', '(a+)?b']
-    for (const pattern of fine) expect(validatePattern(pattern)).toBeNull()
-    expect(compilePattern('(.*)*x')).toBeNull()
+    for (const pattern of [...once, ...fine]) expect({ pattern, message: validatePattern(pattern) }).toEqual({ pattern, message: null })
+    expect(compilePattern('(.*)*x')?.test(`${'a'.repeat(2048)}!`)).toBe(false)
+  })
+  test('unsupported patterns name what is missing', () => {
+    expect(validatePattern('(a)\\1')).toBe("Custom triggers don't support that (backreferences).")
+    expect(validatePattern('(?<!a)b')).toBe("Custom triggers don't support that (lookarounds).")
+    expect(validatePattern('(a{1,100}){1,100}')).toBe("Custom triggers don't support that (too many repeats).")
+    expect(compilePattern('(a)\\1')).toBeNull()
+    expect(compilePattern('Deploy')?.test('npm run deploy')).toBe(true)
   })
   test('known sounds are the catalog plus imports', () => {
     const ids = knownSounds([{ id: 'user:mine', name: 'mine', file: '/x', ext: 'wav', bytes: 1, durationMs: null, peaks: null, isCopy: true }])

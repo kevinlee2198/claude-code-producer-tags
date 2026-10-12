@@ -214,13 +214,15 @@ Shape: `{ id, pattern, outcome: "success" | "fail" | "any", sound, enabled }`.
 
 **Pattern:**
 
-- It is the source of a JavaScript regex, without `/…/` delimiters.
-- It is compiled with the `i` flag.
+- It is written in JavaScript regex syntax, without `/…/` delimiters, and always matches case-insensitively, as with the `i` flag.
 - It is at most 200 characters.
+- It supports literals and escapes (including `\t`, `\n`, `\xHH`, `\uHHHH`, `\cX`), `.`, character classes with ranges and negation, `\d \D \w \W \s \S`, `^ $ \b \B`, groups `(…)` and `(?:…)`, `|`, and the quantifiers `? * + {n} {n,} {n,m}` with their lazy forms.
+- It does not support backreferences, lookarounds, named groups, inline flags, `\p{…}`, `\u{…}`, octal escapes, or escaped letters with no meaning (like `\a`). Such a pattern is refused with a message naming what is missing.
+- It is not run by `RegExp`. It is compiled to a Thompson NFA of at most 2,000 states (more is refused as too many repeats) and run as a state set, so a test costs at most the command length times the state count, whatever the pattern. A backtracking engine can take seconds or hang on a pattern like `(a+)+$`; this one can't.
 
 **Matching:**
 
-- The pattern is tested against the command with heredoc bodies removed, so commit messages don't trigger it.
+- The pattern is tested against the first 2,048 characters of the command, with heredoc bodies removed, so commit messages don't trigger it.
 - **Success** means no `isError`.
 
 **Limits and validation:**

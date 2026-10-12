@@ -181,6 +181,14 @@ describe('command.fail and custom triggers', () => {
     expect(Date.now() - start).toBeLessThan(500)
     expect(MAX_MATCH_INPUT).toBe(2048)
   })
+  test('a pattern that hangs a backtracking engine stays fast on a long command', () => {
+    const s = allOn()
+    s.custom = [{ id: 'c1', pattern: '(a+)+$', outcome: 'any', sound: 'pt:808-boom', enabled: true, isInvalid: false }]
+    const start = Date.now()
+    expect(pickBashHit(s, facts(`echo ${'a'.repeat(2000)}!`))?.key).not.toBe('custom:c1')
+    expect(pickBashHit(s, facts(`echo ${'a'.repeat(100)}`))?.key).toBe('custom:c1')
+    expect(Date.now() - start).toBeLessThan(500)
+  })
 })
 
 describe('model switches', () => {

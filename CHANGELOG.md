@@ -7,7 +7,7 @@ First release.
 - Tags on git commit, push and merge (from Claude Code's own git detection), passing tests, model switches, and exit.
 - Off by default: session start, turn done, failed commands.
 - Custom triggers: a regex over the Bash command, on success, failure or either.
-- Custom triggers reject patterns that could hang (nested or alternating repeats), and only the first 2 KB of a command is matched.
+- Custom triggers use a linear-time regex engine, so no pattern can hang Claude Code (backreferences and lookarounds aren't supported). Only the first 2 KB of a command is matched.
 - `/tags` pane:
   - per-trigger sound, preview and waveform
   - volume (buttons, plus a drag fader in the terminal and desktop app)

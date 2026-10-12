@@ -1,5 +1,6 @@
 import type { CustomTrigger, Settings, SoundId, TriggerId, TriggerKey } from '../types'
 import { BASH_PRIORITY, MAX_MATCH_INPUT } from './constants'
+import type { Matcher } from './match'
 import { compilePattern } from './settings'
 import { commandSegments, startsWithTokens, stripHeredocs, type Segment } from './shell'
 
@@ -142,9 +143,9 @@ export function bashCandidates(facts: BashFacts): TriggerId[] {
   return ids
 }
 
-const compiled = new Map<string, RegExp | null>()
+const compiled = new Map<string, Matcher | null>()
 
-function cachedPattern(pattern: string): RegExp | null {
+function cachedPattern(pattern: string): Matcher | null {
   if (!compiled.has(pattern)) compiled.set(pattern, compilePattern(pattern))
   return compiled.get(pattern) ?? null
 }
