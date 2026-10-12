@@ -1,0 +1,23 @@
+{
+  "seed": 20261010,
+  "tags": [
+    { "id": "anthropic-trust", "caption": "If Anthropic don't trust you, I'm gon' shoot you", "say": "If Anthropic don't trust you, I'm gonna shoot you", "riff": "Metro Boomin", "preset": "dark" },
+    { "id": "just-merged", "caption": "Oh Lord, Claude just merged another one", "riff": "Jetsonmade", "preset": "hype" },
+    { "id": "did-it-again", "caption": "Claude Code, you did it again", "riff": "Mike WiLL Made-It", "preset": "tag" },
+    { "id": "tests-passin", "caption": "We got tests passin' on the track", "say": "We got tests passing on the track", "riff": "original", "preset": "hype" },
+    { "id": "opus-come-out", "caption": "Yo Opus, you wanna come out here?", "riff": "Pi'erre Bourne", "preset": "tag" },
+    { "id": "fable-on-beat", "caption": "Fable on the beat, so it's a banger", "riff": "Murda Beatz", "preset": "hype" },
+    { "id": "sonnet-booth", "caption": "Sonnet in the booth, write it down", "riff": "original", "preset": "tag" },
+    { "id": "haiku-quick", "caption": "Haiku on the beat, make it quick", "riff": "original", "preset": "quick" },
+    { "id": "who-let-model", "caption": "Who let this model on the track?", "riff": "original", "preset": "tag" },
+    { "id": "claude-outta", "caption": "Claude outta here", "riff": "Wheezy", "preset": "dark" },
+    { "id": "khaled-claude", "caption": "Claude Code, Claude Code, Claude Code-ah", "say": "Claude Code, Claude Code, Claude Code ah", "riff": "DJ Khaled", "preset": "hype" },
+    { "id": "another-one", "caption": "Another one", "riff": "DJ Khaled", "preset": "quick" },
+    { "id": "tay-keith-fix", "caption": "Tay Keith, fix this", "riff": "Tay Keith", "preset": "dark" }
+  ],
+  "effects": [
+    { "id": "808-boom", "caption": "808 boom", "kind": "808" },
+    { "id": "riser", "caption": "Riser", "kind": "riser" },
+    { "id": "scratch", "caption": "Scratch", "kind": "scratch" }
+  ]
+}
