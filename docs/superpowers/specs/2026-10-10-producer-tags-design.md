@@ -1,7 +1,7 @@
 # Producer Tags: Design
 
 **Date:** 2026-10-10
-**Status:** Draft, revised after spec review (rev 3: plan review)
+**Status:** Draft, revised after spec review (rev 4: the Host pattern)
 **Target:** Claude Code mod API, build 2.1.296
 
 ## 1. Summary
@@ -49,12 +49,14 @@ typings/claude-code.d.ts            pinned API snapshot (2.1.296) for tsc in CI;
 plugin/
   .claude-plugin/plugin.json        name "producer-tags", types "./types/index.d.ts"
   hooks/hooks.json                  { "modules": ["./register.tsx"] }
-  hooks/register.tsx                wires units to events; no logic of its own
-  hooks/constants.ts, state.ts      ids, defaults, timings; $.state atoms
-  hooks/notify.ts, codec.ts         toastOnce/logError/act; base64
+  hooks/register.tsx                THE HOOK FILE: every $.state atom, hostOf($), the stored
+                                    host, and every hook, each handing plain functions a Host
+  hooks/host.ts                     type Host: the engine calls the mod uses (§3)
+  hooks/constants.ts, state.ts      ids, defaults, timings; the atoms' shared initial values
+  hooks/notify.ts, codec.ts         toastOnce/logError/act over the Host; base64
   hooks/shell.ts                    command tokenizer/segmenter (pure)
   hooks/triggers.ts                 event → trigger hit (pure)
-  hooks/stage.ts                    isLive / isOnStage (pure)
+  hooks/stage.ts                    claims, deadlines, isLive / isOnStage, cooldowns (pure)
   hooks/pipeline.ts                 settings/cooldown/claim → play; finish; mute
   hooks/platform.ts, player.ts      OS detection; playback routing
   hooks/library.ts                  bundled + imported sounds, WAV parsing, peaks
@@ -62,13 +64,13 @@ plugin/
   hooks/imports.ts                  import and delete user sounds
   hooks/settings.ts                 store load/migrate/merge/save
   hooks/ui/visual.ts, animate.ts    bar/waveform text; the 10 fps band loop
-  hooks/ui/pane.tsx, pane-actions.ts  /tags pane and its state transforms
-  hooks/ui/band.tsx                 now-playing band (AbovePrompt)
-  hooks/ui/badges.tsx               ToolUse row badges
-  hooks/ui/mode.tsx                 SessionMode label
+  hooks/ui/pane.tsx, pane-actions.ts  /tags pane view and its state transforms
+  hooks/ui/band.tsx                 now-playing band view (AbovePrompt)
+  hooks/ui/badges.tsx               ToolUse row badge view
+  hooks/ui/mode.ts                  SessionMode label
   hooks/ui/fader.client.tsx         Client module: pointer volume fader
   sounds/*.wav                      GENERATED
-  tests/*.test.ts(x), tests/world.tsx  claude plugin test suites and shared fakes
+  tests/*.test.ts(x), tests/world.tsx, tests/fake-host.ts  test suites; engine fakes; a fake Host
   types/index.d.ts                  shared types + PluginState contract
 tools/generate-tags/                Python (stdlib only) tag generator
 docs/ROADMAP.md
@@ -87,10 +89,21 @@ README.md, LICENSE (MIT), CHANGELOG.md
    - `session.end`
    - `classic.Stop`
 2. **`triggers.ts`** turns the event into a `Hit` (`{ key, sound }`) or `null`.
-3. **`pipeline.ts`** combines the hit with settings, cooldowns, and a claim on `nowPlaying`, then plays it or skips it.
+3. **`pipeline.ts`** combines the hit with settings, cooldowns, and a claim on `nowPlaying` (`stage.ts`), then plays it or skips it.
 4. **`library.ts`** resolves the sound ID to a clip: `{ asset | path | base64+mime }`, `durationMs`, `caption`, `riff`, `peaks`.
 5. **`player.ts`** plays it. It reports when playback actually starts and when it ends.
 6. **State:** when playback starts, `nowPlaying.startedAt` is set and `tagged[toolUseId]` is written. When it ends, `nowPlaying` is cleared by compare-and-swap on `token`.
+
+**The Host**
+
+The engine follows `$` only into functions declared in the same file as the hook, and reads an atom only from a const of that file (§14). The mod therefore follows the pattern of Anthropic's own mods (`mods/diff`, `code-modernization`):
+
+- **`register.tsx` is the one hook file.** `hostOf($)` returns a `Host`, an object whose every member is one `$.noun.event(...)` call (`now: () => $.clock.now()`, `run: (argv, init) => $.process.run(argv, init)`, `env.home: () => $.env.get('HOME')`, `state.nowPlaying.update: f => update($, nowPlayingAtom, f)`, …). Every `$.state` atom is declared there.
+- **Everything else is plain functions over the Host.** `settings`, `platform`, `player`, `pipeline`, `imports`, `ui/animate`, and the pane's actions take a `host` where they would have taken `$`. The views (`ui/band`, `ui/badges`, `ui/pane`) take an element table, plain data and closures. Tests stand in a fake Host for the plain functions, and the engine kit runs the whole mod.
+- **State stays in `$.state`** (§9.2), reached through `host.state.<key>` (`read`, `update` by compare-and-swap). The render hooks read it with their own `$`, so a write redraws only the drawings that read it; the band's 10 fps loop never invalidates every badge.
+- **Which binding a call uses.** `session.start` binds a host and stores it in `register`'s closure. Pane and badge buttons, the fader, timers and scheduled work act through the host they were handed. A hook passes `host ?? hostOf($)`: the stored binding, or its own `$` while none is stored (before `session.start`, or after a hot reload until `session.start` rebinds). `session.end` binds its own `$`, so the outro launch is one of that dispatch's calls (§6.3).
+- **A hot reload** re-runs `register` (the stored host is gone, as are the clip handle and timers of the old module; the engine cancels the old timers) and then `session.start`, which binds afresh and runs `recoverStage` (§5).
+- **No noun.** Nothing crosses a file boundary that a plain function over the Host cannot carry, so the mod adds nothing to `$`.
 
 **The `tool.call` hook:**
 
@@ -544,7 +557,7 @@ imports: ImportedSound[]  // { id, name, file, ext, bytes, durationMs | null, pe
 **Who loads:**
 
 - `session.start` loads the store into `$.state`.
-- Any reader that finds `settings` undefined in state loads it from the store itself. That covers ordering between `classic.SessionStart` and `session.start`, and the case of `/clear`.
+- Any reader that finds `settings` undefined in state loads it from the store itself. That covers ordering between `classic.SessionStart` and `session.start`, and the case of `/clear`. The pane, which may not write state while it draws, asks for the load on a timer and shows "Loading…".
 
 ### 9.2 `$.state` (session; declared in `types/index.d.ts`)
 
@@ -560,6 +573,8 @@ imports: ImportedSound[]  // { id, name, file, ext, bytes, durationMs | null, pe
 | `cooldowns` | `Record<TriggerId, number>` |
 | `paneDraft` | `{ isAdding, customPattern, customOutcome, customSound, importPath, message }` |
 | `toasted` | the toast causes already shown this session |
+
+The atoms are declared in `register.tsx`, the one file that reads and writes them (§14); their initial values come from `state.ts`.
 
 ### 9.3 Writes
 
@@ -634,9 +649,9 @@ Every caption in §7.1 is provisional. The lines are reviewed with the user whil
 
 | Suite | Covers |
 |---|---|
-| `codec`, `shell`, `triggers`, `settings`, `library`, `player`, `visual`, `pane-actions` | the pure units (tokenizer, trigger rules, settings merge, WAV parsing and slugs, player argv/env, drawing helpers, pane transforms) |
+| `codec`, `shell`, `triggers`, `settings`, `stage`, `library`, `platform`, `player`, `visual`, `pane-actions` | the pure units (tokenizer, trigger rules, settings merge, claims and deadlines, WAV parsing and slugs, player argv/env, drawing helpers, pane transforms), and over a fake Host: settings load and save, platform detection, `fire`'s refusals |
 | `pipeline` | end-to-end through `register.tsx` per OS: the tool result returns untouched before a slow play; claims under concurrency; drop-while-playing; cooldown; deadline expiry; previews interrupt and bypass cooldown; mute and `/tags-mute`; imports and missing-file fallback; failed plays; the 15 s cap; Linux kill; WSL/Windows argv and env; model/session/stop events; the detached outro; other plugins' calls ignored |
-| `imports` | the pure path cleaning (drag-and-drop quotes and escapes) and `resetSound` |
+| `imports` | the pure path cleaning (drag-and-drop quotes and escapes), the import checks, the copy and delete commands per OS, `resetSound`; import and delete over a fake Host |
 | `band`, `badges`, `pane`, `fader` | each surface they render on; the import flows through the pane; the orphaned-entry deadline in the band |
 
 ### 12.2 Type checks and validation
@@ -685,3 +700,26 @@ The WSL route is verified on the author's machine.
 7. **SAPI quality.** Are the SAPI voices good enough after effects? If not, render with `say` on a Mac before release.
 
 Resolved by reading the API, so not spiked: a focused `Input` takes every printable key, so pad hotkeys cannot steal typed digits. Dropped from v1: the 30 fps `Raster` + `$.ui.blit` equalizer (the 10 fps state loop repaints the band anyway).
+
+Resolved by reading the API and running `claude plugin validate` and `claude plugin test` on a scratch build (rev 4):
+
+- **`$` stays in its file.** A module that passes `$` to an imported function is refused at load (and by validate and the test kit). `$` goes only into functions declared at the top of the same file, and is always written `$.noun.event(...)`; `read` and `update` from `claude-code` are the exceptions. Hence the Host (§3), as in Anthropic's own mods.
+- **Atoms are per file.** `read`/`update` take only an atom built by `atom(...)` in a const of the same file (or an inline `{ plugin, key }` literal ref), so all of them live in `register.tsx`.
+- **One unmatched hook per event** per plugin; a second one without a matcher is refused (any matcher, even `{}`, lifts the limit). `hooks.json` lists one module.
+- **`$.env.get` takes a literal name.**
+- **A Host bound in `session.start` works later** from a `tool.call`'s scheduled work, a button's closure and a `$.clock` timer (the test kit; Task 8's live smoke test checks a real session). A call on a plugin noun from such a closure or timer would skip the plugin's own hooks, which is one more reason the mod declares no noun.
+- **Name clash:** inside `declare module 'claude-code'`, `Settings` is the engine's own type (`Readonly<Record<string, unknown>>`), which had made the `settings` atom untyped. The contract names ours `ProducerTagsSettings` there.
+- **Paths in tests:** the test kit resolves a `C:\…` path against the plugin folder on a Linux host, so the Windows copy command is tested as pure argv, not through the pane.
+
+### Spike results (Task 0, 2026-10-11)
+
+| Risk | Result (WSL) | Result (macOS) | Consequence |
+|---|---|---|---|
+| R0 Windows tool name | pending (no native Windows install) | — | Checked in Task 15; listed in README known limitations until then |
+| R1 Detached dispatch | yes: `$.clock.after(0)` work ran ~12 s after the tool call, and a later continuation ran | pending (mac) | Pipeline as designed |
+| R2 Windows MediaPlayer | yes: `started`, ticks, exit 0 at gain 0.2 and 1.0; a `\\wsl.localhost` path opened; sound heard (loudness difference not confirmed) | n/a | `WINDOWS_ENGINE = 'mediaplayer'`; Task 15 rechecks that volume changes |
+| R3 Detached process | yes: marker read `prompt_input_exit` after `/exit` | pending (mac) | The exit outro is launched detached |
+| R4 Pointer and hover | yes, on the main screen | pending (mac) | Fader and badge hover card stay; no "R4 no" edits |
+| R5 `/mute` | registered with `immediate: true` | — | `/tags-mute` stays as the fallback only |
+| R6 CI without credentials | yes: validate and test pass with an empty `HOME` (`test` exits 1 when no test files exist) | — | CI plugin job keeps `continue-on-error: false` |
+| R7 SAPI quality | deferred to Task 5's listening review | — | — |

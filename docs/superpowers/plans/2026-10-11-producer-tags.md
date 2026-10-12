@@ -4,20 +4,16 @@
 
 **Goal:** Build and ship the Producer Tags Claude Code mod. It plays parody producer tags when Claude commits, pushes, merges, passes tests, switches models, or exits. It includes a `/tags` pane, a now-playing band, tool-row badges, and user imports.
 
-**Architecture:** The mod is a single function-hooks plugin under `plugin/`. It is split into small units:
-- `shell` and `triggers`: pure functions that turn events into trigger hits.
-- `settings`: store load, migrate, and merge.
-- `library`: sounds and WAV parsing.
-- `platform` and `player`: OS routing for playback.
-- `stage` and `pipeline`: claim, cooldown, play, and finish.
-- `imports`: user audio files.
-- `ui/*`: pane, band, badges, and mode label.
+**Architecture:** The mod is a single function-hooks plugin under `plugin/`, built on the Host pattern of Anthropic's own mods (`mods/diff` in anthropics/claude-code, `code-modernization` in anthropics/claude-plugins-official):
+- **`register.tsx` is the one hook file.** It declares every `$.state` atom, binds a `Host` from `$` (`hostOf`), stores the binding `session.start` made in a closure variable (`let host`), and wires each event to plain functions. Its render hooks read state with their own `$` (so the drawing subscribes) and hand plain data to view functions.
+- **Everything else is plain functions over the `Host`** (`hooks/host.ts`), the small interface of engine calls the mod uses: `settings` (load and save), `platform`, `player` (the playback routes), `pipeline` (claim, cooldown, play, finish, mute), `imports`, `ui/animate` (the 10 fps band loop), and the views `ui/band`, `ui/badges`, `ui/pane` with `ui/pane-actions`. Pane buttons, badge replays, timers and the fader act through the stored host. The pure helpers (`shell`, `triggers`, `stage`, `library`, `ui/visual`) need no Host at all.
+- **Tests** run the plain modules against a fake Host (`tests/fake-host.ts`) and the whole mod through the engine with `tests/world.tsx`.
 
-`register.tsx` only wires these units to events. Default tags are rendered offline by a Python (stdlib-only) generator into committed WAVs plus a generated `hooks/catalog.ts`.
+Default tags are rendered offline by a Python (stdlib-only) generator into committed WAVs plus a generated `hooks/catalog.ts`.
 
 **Tech Stack:** TypeScript with JSX through the global `h`, in the Claude Code 2.1.296 mod API. Tests use `claude-code/testing` via `claude plugin test`. Type-checking uses `tsc` 5.6 against a vendored `claude-code.d.ts`. The generator is Python 3 (stdlib only) and renders voices with Windows SAPI via `powershell.exe` (WSL or Windows) or macOS `say`.
 
-**Spec:** `docs/superpowers/specs/2026-10-10-producer-tags-design.md` (rev 3). Read it before starting any task.
+**Spec:** `docs/superpowers/specs/2026-10-10-producer-tags-design.md` (rev 4). Read it before starting any task.
 
 ## Global Constraints
 
@@ -52,6 +48,14 @@
 - **Unofficial parody disclaimer, verbatim:** "Unofficial parody fan project. Not affiliated with or endorsed by Anthropic or any producer or artist."
 - **Module rules:** a hooks module and everything it imports must be `.ts`/`.tsx`. JSON can't be imported, so the catalog is generated as `hooks/catalog.ts`.
 - **Environment:** there is no `import()`, no Node, and no timers. Waiting uses `$.clock`, and base64 uses `hooks/codec.ts`.
+- **`$` stays in `register.tsx`.** `claude plugin validate`, the engine and the test kit refuse a module that passes `$` to anything but a function declared at the top level of the same file (a `function` declaration, or a const bound to one), or that spells it other than `$.noun.event(...)`. So `register.tsx` hands the rest of the mod a `Host` from `hostOf($)`, whose every member is one such call, and no other module imports `EngineInterface`. `read($, …)` and `update($, …)` from `claude-code` are the only imported functions `$` may be passed to.
+- **Atoms are declared in the file that reads them.** `read` and `update` take only an atom made by `atom({ plugin: 'producer-tags', key: '<literal>' } as const, initial)` in a const of the same file, or an inline `{ plugin, key }` literal ref. All ten atoms live in `register.tsx`; the plain modules reach the values through `host.state.<key>` (a `Cell`: `read()`, `update(change)`), and `state.ts` holds the shared initial values (`NO_WORD`, `EMPTY_DRAFT`).
+- **One unmatched hook per event.** A plugin may register each event once without a matcher (a second `on('session.start', …)` is refused); any matcher, even `{}`, lifts the limit. So there is one `session.start` (bind the host, load the store, recover the stage, register `/tags` and `/mute`) and one `ui.message`.
+- **`hooks.json` lists exactly one module**, `./register.tsx`.
+- **`$.env.get` takes a literal name:** the Host has one member per variable (`env.home()` is `$.env.get('HOME')`).
+- **Which binding a call uses.** Closures (pane and badge buttons), timers and scheduled work act through the host they were handed. A hook passes `host ?? hostOf($)`: the binding `session.start` stored, or its own `$` while there is none (before `session.start`; after a hot reload, which re-runs `register` and empties `host` until `session.start` rebinds it). `session.end` always binds its own `$` (spec §6.3).
+- **`Settings` inside the contract.** Inside `declare module 'claude-code'`, the name `Settings` is the engine's own type, so `PluginState` types the settings key as `ProducerTagsSettings`.
+- **Edits to a file an earlier task wrote** are small and anchored: add a file, add imports (kept sorted by path), add a line after a named line, replace one named line, or add hooks directly above `register`'s closing `}`. No step replaces a block another task wrote. After each edit to `register.tsx`, check its outline with `grep -n "^  on('" plugin/hooks/register.tsx` against the list the task gives.
 - **Commits:** end every commit message with `Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>`.
 
 ## Review Focus
@@ -67,6 +71,7 @@ These inputs are implied by the spec but no task's main tests cover them. Each o
 
    [Task 3]
 5. **Windows `\r\n` line endings** in a Bash command. `git status\r\nnpm test` should still split, and `\r` must not end up glued to a word such as `test\r`. [Task 2]
+6. **A clip started on one path and stopped or replaced on another.** `/mute` must stop a clip a Bash call started (the Linux pid is killed), and a pane ▶ must interrupt it, although each acts through the host its own caller was given. [Tasks 8, 12]
 
 ---
 
@@ -80,32 +85,34 @@ package.json, tsconfig.json            dev-only: TypeScript for type-checking
 typings/claude-code.d.ts               vendored API snapshot (2.1.296), not shipped
 plugin/.claude-plugin/plugin.json
 plugin/hooks/hooks.json                { "modules": ["./register.tsx"] }
-plugin/hooks/register.tsx              wiring only
+plugin/hooks/register.tsx              THE HOOK FILE: atoms, hostOf($), the stored host, every hook
+plugin/hooks/host.ts                   type Host (and Cell): the engine calls the mod uses
 plugin/hooks/constants.ts              ids, defaults, timings, trigger table
-plugin/hooks/state.ts                  $.state atoms
-plugin/hooks/notify.ts                 toastOnce, logError
+plugin/hooks/state.ts                  the atoms' shared initial values (NO_WORD, EMPTY_DRAFT)
+plugin/hooks/notify.ts                 toastOnce, logError, act (over the Host)
 plugin/hooks/codec.ts                  base64 + UTF-16LE base64
 plugin/hooks/shell.ts                  heredoc strip, tokenizer, prefix strip
 plugin/hooks/triggers.ts               event → Hit (pure)
-plugin/hooks/settings.ts               defaults, normalize, ensureLoaded, change*
+plugin/hooks/settings.ts               defaults, normalize; loadFromStore, ensureLoaded, change* (Host)
 plugin/hooks/catalog.ts                GENERATED by tools/generate-tags
-plugin/hooks/library.ts                WAV parse, peaks, slug, resolveSound
-plugin/hooks/platform.ts               OS + player detection
-plugin/hooks/player.ts                 play / playDetached per OS
-plugin/hooks/stage.ts                  isLive / isOnStage (pure)
-plugin/hooks/pipeline.ts               fire, finish, stopCurrent, fireDetached, toggleMute, recoverStage
-plugin/hooks/imports.ts                importSound, deleteImport
+plugin/hooks/library.ts                WAV parse, peaks, slug, resolveSound (pure)
+plugin/hooks/platform.ts               OS + player detection (Host)
+plugin/hooks/player.ts                 scripts, argv/env (pure); play / playDetached per OS (Host)
+plugin/hooks/stage.ts                  isLive / isOnStage, claims, deadlines, cooldowns (pure)
+plugin/hooks/pipeline.ts               fire, finish, stopCurrent, schedule, fireDetached, toggleMute, recoverStage (Host)
+plugin/hooks/imports.ts                path cleaning, checks, copy/delete argv (pure); importSound, deleteImport (Host)
 plugin/hooks/ui/visual.ts              bars, waveform, caption word (pure)
-plugin/hooks/ui/animate.ts             the 10 fps band frame loop
-plugin/hooks/ui/band.tsx               AbovePrompt band
-plugin/hooks/ui/badges.tsx             ToolUse badges
-plugin/hooks/ui/mode.tsx               SessionMode label
-plugin/hooks/ui/pane-actions.ts        pane state transforms + actions
-plugin/hooks/ui/pane.tsx               /tags pane (and the fader's ui.message)
+plugin/hooks/ui/animate.ts             the 10 fps band frame loop (Host)
+plugin/hooks/ui/band.tsx               bandView: the AbovePrompt line
+plugin/hooks/ui/mode.ts                modesWith: the SessionMode label (pure)
+plugin/hooks/ui/badges.tsx             badgeView: the ToolUse chip
+plugin/hooks/ui/pane-actions.ts        pane state transforms (pure) + actions (Host)
+plugin/hooks/ui/pane.tsx               paneView / mobilePaneView: the /tags pane
 plugin/hooks/ui/fader.client.tsx       Client volume fader
 plugin/types/index.d.ts                shared types + PluginState contract
 plugin/sounds/*.wav                    GENERATED
-plugin/tests/world.tsx                 test fakes (shared by $-level tests)
+plugin/tests/world.tsx                 engine fakes beneath the plugin (end-to-end tests)
+plugin/tests/fake-host.ts              a Host with no engine (the plain modules' unit tests)
 plugin/tests/*.test.ts(x)
 tools/generate-tags/{tags.json,audio.py,fx.py,generate.py,smoke_test.py,test_audio.py}
 tools/generate-tags/voices/{__init__.py,sapi.py,say.py}
@@ -345,6 +352,8 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ---
 
 ### Task 1: Scaffold, shared types, constants, state, codec
+
+> Done. Task 4 later moves two of its files onto the Host (Global Constraints): `notify.ts`'s helpers take a `Host` instead of `$`, and `state.ts`'s atoms move into `register.tsx`, leaving their initial values.
 
 **Files:**
 - Create:
@@ -801,7 +810,7 @@ export const CATALOG: readonly CatalogEntry[] = [
 ]
 ```
 
-`plugin/hooks/register.tsx` is a minimal placeholder that loads and does nothing. Task 8 fills it.
+`plugin/hooks/register.tsx` is a minimal placeholder that loads and does nothing. Task 4 replaces it.
 ```tsx
 import type { Register } from 'claude-code'
 
@@ -1576,36 +1585,33 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 ---
 
-### Task 4: Settings: normalize, migrate, load, change
+### Task 4: The Host, and settings load and save (`host.ts`, `settings.ts`, `register.tsx`)
+
+This task sets up the layout every later task follows (read **Global Constraints** first). `register.tsx` is the mod's one hook file: it declares every atom, binds a `Host` from `$` (`hostOf`), and stores the one `session.start` bound. Everything else is plain functions over that `Host`, unit-tested with a fake one (`tests/fake-host.ts`) and end to end through the engine (`tests/world.tsx`).
 
 **Files:**
-- Modify: `plugin/hooks/settings.ts` (complete it)
-- Test: `plugin/tests/settings.test.ts`, `plugin/tests/world.tsx` (shared fakes, first version)
+- Create: `plugin/hooks/host.ts` (the `Host` type, complete for every later task)
+- Modify:
+  - `plugin/types/index.d.ts` (the settings key is typed `ProducerTagsSettings`)
+  - `plugin/hooks/notify.ts` (its helpers take a `Host` instead of `$`)
+  - `plugin/hooks/state.ts` (only the atoms' shared initial values stay; the atoms move to `register.tsx`)
+  - `plugin/hooks/settings.ts` (complete it)
+  - `plugin/hooks/register.tsx` (atoms, `hostOf`, the stored host, `session.start`)
+- Test: `plugin/tests/world.tsx` (engine fakes, first version), `plugin/tests/fake-host.ts`, `plugin/tests/settings.test.ts`
 
 **Interfaces:**
-- **Consumes:**
-  - `CATALOG` (`catalog.ts`)
-  - `toastOnce` (`notify.ts`)
-  - `settingsAtom`, `importsAtom` (`state.ts`)
-  - constants
+- **Consumes:** `CATALOG` (`catalog.ts`); constants.
 - **Produces:**
-  - `SETTINGS_KEY = 'settings'`, `IMPORTS_KEY = 'imports'`
-  - `validatePattern(pattern): string | null`, which returns an error message or null
-  - `migrate(raw: unknown): unknown`
-  - `normalizeSettings(raw: unknown, known: ReadonlySet<SoundId>): { settings: Settings; isCorrupt: boolean }`
-  - `normalizeImports(raw: unknown): ImportedSound[]`
-  - `knownSounds(imports): Set<SoundId>`
-  - `type Loaded = { settings: Settings; imports: ImportedSound[] }`
-  - `ensureLoaded($): Promise<Loaded>` and `loadFromStore($): Promise<Loaded>`
-  - `changeSettings($, change: (s: Settings) => Settings, options?: { persist?: boolean }): Promise<Settings>`
-  - `changeImports($, change: (list: ImportedSound[]) => ImportedSound[]): Promise<ImportedSound[]>`
-  - Test helpers in `tests/world.tsx`: `world(on, options)`, `bash($, w, command, answer?)`, `committed(kind?)`, the `OK` answer, the fixtures `PANE`, `BAND`, `EMPTY_WAV`, and the types `World` and `WorldOptions`
-  - `World` records `plays`, `runs`, `spawns`, `toasts`, `state`, `stored`, `opened`, `registered` and `toolUseIds`, and answers Bash from `bash` or the per-command `bashBy`
-  - `WorldOptions` covers `os`, `linuxPlayer`, `audioMs`, `audioFails`, `spawnTicks`, `store`, `env`, `files`, `runExit` and `refuse`
+  - `host.ts`: `type Cell<T> = { read(); update(change) }` and `type Host`: `root`, `now`, `after`, `every`, `run`, `spawn`, `play`, `readText`, `readBytes`, `exists`, `stat`, `list`, `env.{os, home, userProfile, configDir, wslEnv}`, `storeGet`, `storeSet`, `toast`, `log` (debug), `openPane`, `registerCommand`, `state.{settings, imports, nowPlaying, bandFrame, captionWord, platform, cooldowns, toasted, paneDraft}` (each a `Cell`), and `tag(toolUseId, sound)` (the `tagged` family).
+  - `notify.ts`: `ToastCause`, `toastOnce(host, cause, text)`, `logError(host, where, error)`, `act(host, where, work)` (the one fire-and-forget helper: failures go to the debug log).
+  - `state.ts`: `NO_WORD = -1`, `EMPTY_DRAFT`.
+  - `settings.ts`: `SETTINGS_KEY`, `IMPORTS_KEY`, `validatePattern`, `isRecord`, `migrate`, `OUTCOMES`, `normalizeSettings(raw, known)`, `normalizeImports(raw)`, `knownSounds(imports)`, `type Loaded = { settings; imports }`, `loadFromStore(host)`, `ensureLoaded(host)`, `changeSettings(host, change, { persist? })`, `changeImports(host, change)`.
+  - `register.tsx`: the ten atoms; `hostOf($): Host`; `register`, holding `let host: Host | null` and the `session.start` hook (binds `host`, then loads the store).
+  - Tests: `world(on, options)`, `bash($, w, command, answer?)`, `committed(kind?)`, `OK`, `START`, `PANE`, `BAND`, `EMPTY_WAV`, `World`, `WorldOptions` (`world.tsx`); `fakeHost(options)`, `cell(initial)`, `FakeHost` (`fake-host.ts`).
 
-- [ ] **Step 1: Write the shared test world**
+- [ ] **Step 1: Write the test helpers**
 
-`plugin/tests/world.tsx`. Later tasks reuse it; when a later task touches a new `$` noun, add its fake here beside the others:
+`plugin/tests/world.tsx` fakes every engine noun the mod touches, beneath the plugin. Later tasks reuse it; when a later task touches a new `$` noun, add its fake here beside the others. A fake spawned process ends by returning `{ value: { code, signal } }`.
 ```tsx
 import type { On } from 'claude-code'
 import { mock, type Engine } from 'claude-code/testing'
@@ -1627,6 +1633,9 @@ export const BAND = {
   component: 'AbovePrompt' as const,
   props: { hasSurvey: false, isWorking: false, maxRows: 4, bodyColumns: 120, scroll: { offset: 0, bodyRows: 4 }, view: {} },
 }
+
+/** What `$.session.start` takes in a test: the session as a REPL in /repo. */
+export const START = { cwd: '/repo', surface: 'terminal', isInteractive: true } as const
 
 export type BashAnswer =
   | { result: Record<string, unknown> }
@@ -1657,6 +1666,8 @@ export type World = {
   runs: { argv: readonly string[]; env: Record<string, string> | undefined }[]
   spawns: { argv: readonly string[]; env: Record<string, string> | undefined; isEnded: boolean }[]
   toasts: string[]
+  /** What the plugin wrote to the debug log. */
+  logs: string[]
   state: Map<string, unknown>
   opened: string[]
   registered: string[]
@@ -1714,6 +1725,7 @@ export function world(on: On, options: WorldOptions = {}): World {
     runs: [],
     spawns: [],
     toasts: [],
+    logs: [],
     state: new Map(),
     opened: [],
     registered: [],
@@ -1741,7 +1753,7 @@ export function world(on: On, options: WorldOptions = {}): World {
         await clock.sleep(100)
         yield { stream: 'stdout' as const, text: 't\n' }
       }
-      return { code: 0, signal: null }
+      return { value: { code: 0, signal: null } }
     } finally {
       record.isEnded = true
     }
@@ -1770,7 +1782,10 @@ export function world(on: On, options: WorldOptions = {}): World {
     w.toasts.push(e.text)
     return { value: undefined }
   })
-  on('ui.log', () => ({ value: undefined }))
+  on('ui.log', ($, e) => {
+    w.logs.push(e.text)
+    return { value: undefined }
+  })
   on('ui.open', ($, e) => {
     w.opened.push(e.id)
     return { value: { isPlaced: true } }
@@ -1811,6 +1826,118 @@ export async function bash($: Engine, w: World, command: string, answer: BashAns
 }
 ```
 
+`plugin/tests/fake-host.ts` stands in for the engine in the plain modules' unit tests:
+```ts
+import type { Cell, Host } from '../hooks/host'
+import { EMPTY_DRAFT, NO_WORD } from '../hooks/state'
+import type { ImportedSound, NowPlaying, Platform, Settings, TriggerKey } from '../types'
+
+/** A `$.state` value held in memory. */
+export function cell<T>(initial: T): Cell<T> {
+  let value = initial
+  return {
+    read: async () => value,
+    update: async change => (value = change(value)),
+  }
+}
+
+export type FakeHostOptions = {
+  env?: { OS?: string; HOME?: string; USERPROFILE?: string; CLAUDE_CONFIG_DIR?: string; WSLENV?: string }
+  store?: Record<string, unknown>
+  /** Text files (`readText`) and byte files (`readBytes`, as base64) by path. */
+  files?: Record<string, string | { base64: string }>
+  /** Answers `run`; the default exits 0 with no output. */
+  run?: (argv: readonly string[]) => { exitCode?: number; stdout?: string }
+}
+
+/** What a fake Host recorded. */
+export type FakeHost = Host & {
+  toasts: string[]
+  logs: string[]
+  runs: { argv: readonly string[]; env: Record<string, string> | undefined }[]
+  stored: Map<string, unknown>
+  tags: Map<string, string | null>
+}
+
+const missing = (path: string) => Promise.reject(new Error(`ENOENT: ${path}`))
+
+/**
+ * A Host with no engine beneath: state, store and files in memory, a clock that stands still at
+ * 1 000 000 and timers that never fire. For the plain modules' unit tests; flows that need the
+ * clock to move go through the engine with `world()` instead.
+ */
+export function fakeHost(options: FakeHostOptions = {}): FakeHost {
+  const store = new Map(Object.entries(options.store ?? {}))
+  const files = new Map(Object.entries(options.files ?? {}))
+  const env = options.env ?? { HOME: '/home/dev' }
+  const timer = { cancel: () => undefined }
+  const host: FakeHost = {
+    toasts: [],
+    logs: [],
+    runs: [],
+    stored: new Map(),
+    tags: new Map(),
+    root: '/plugin',
+    now: async () => 1_000_000,
+    after: () => timer,
+    every: () => timer,
+    run: async (argv, init) => {
+      host.runs.push({ argv, env: init?.env })
+      const answer = options.run?.(argv) ?? {}
+      return { exitCode: answer.exitCode ?? 0, stdout: answer.stdout ?? '', stderr: '', isStdoutTruncated: false, isStderrTruncated: false }
+    },
+    spawn: () => {
+      throw new Error('fakeHost: spawn is not faked; test playback through world()')
+    },
+    play: async () => undefined,
+    readText: async path => {
+      const file = files.get(path)
+      return typeof file === 'string' ? file : missing(path)
+    },
+    readBytes: async path => {
+      const file = files.get(path)
+      return file !== undefined && typeof file !== 'string' ? file : missing(path)
+    },
+    exists: async path => files.has(path),
+    stat: async path => {
+      const file = files.get(path)
+      if (file === undefined) return missing(path)
+      return { kind: 'file', size: typeof file === 'string' ? file.length : Math.floor((file.base64.length * 3) / 4), mtimeMs: 0, isLink: false }
+    },
+    list: async () => [],
+    env: {
+      os: async () => env.OS,
+      home: async () => env.HOME,
+      userProfile: async () => env.USERPROFILE,
+      configDir: async () => env.CLAUDE_CONFIG_DIR,
+      wslEnv: async () => env.WSLENV,
+    },
+    storeGet: async key => store.get(key),
+    storeSet: async (key, value) => {
+      store.set(key, value)
+      host.stored.set(key, value)
+    },
+    toast: text => void host.toasts.push(text),
+    log: text => void host.logs.push(text),
+    openPane: async () => ({ isPlaced: true }),
+    registerCommand: async spec => ({ command: spec.name }),
+    state: {
+      settings: cell<Settings | null>(null),
+      imports: cell<ImportedSound[] | null>(null),
+      nowPlaying: cell<NowPlaying | null>(null),
+      bandFrame: cell(0),
+      captionWord: cell(NO_WORD),
+      platform: cell<Platform | null>(null),
+      cooldowns: cell<Partial<Record<TriggerKey, number>>>({}),
+      toasted: cell<string[]>([]),
+      paneDraft: cell(EMPTY_DRAFT),
+    },
+    tag: async (toolUseId, sound) => void host.tags.set(toolUseId, sound),
+  }
+  return host
+}
+```
+
 - [ ] **Step 2: Write the failing tests**
 
 `plugin/tests/settings.test.ts`:
@@ -1818,8 +1945,9 @@ export async function bash($: Engine, w: World, command: string, answer: BashAns
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
-import { defaultSettings, knownSounds, normalizeImports, normalizeSettings, validatePattern } from '../hooks/settings'
-import { world } from './world'
+import { changeSettings, defaultSettings, ensureLoaded, knownSounds, loadFromStore, normalizeImports, normalizeSettings, validatePattern } from '../hooks/settings'
+import { fakeHost } from './fake-host'
+import { START, world } from './world'
 
 const known = knownSounds([])
 
@@ -1896,70 +2024,213 @@ describe('normalizeImports and validatePattern', () => {
 describe('loading through $', () => {
   test('session.start loads a corrupt store as defaults and toasts once', async ($, on) => {
     const w = world(on, { store: { settings: 'garbage' } })
-    await $.session.start({} as never)
-    await $.session.start({} as never)
+    await $.session.start(START)
+    await $.session.start(START)
     await w.clock.settle()
     expect(w.toasts.filter(t => t.includes('unreadable'))).toHaveLength(1)
     expect(w.state.get('settings')).toEqual(defaultSettings())
   })
 })
-```
 
-The last test needs `register.tsx` to load settings in `session.start`. Until Task 8, add this to the minimal register, then keep it in Task 8:
-```tsx
-import type { Register } from 'claude-code'
-
-import { logError } from './notify'
-import { loadFromStore } from './settings'
-
-export const register: Register = on => {
-  on('session.start', async ($, e, next) => {
-    try {
-      await loadFromStore($)
-    } catch (error) {
-      logError($, 'session.start', error)
-    }
-    return next(e)
+describe('loading and saving through a Host', () => {
+  test('a corrupt store loads as defaults with one toast; later reads come from state', async () => {
+    const host = fakeHost({ store: { settings: 'garbage' } })
+    expect((await loadFromStore(host)).settings).toEqual(defaultSettings())
+    await loadFromStore(host)
+    expect(host.toasts).toEqual(['Producer Tags: settings were unreadable, so the defaults are back.'])
+    await host.state.settings.update(s => (s === null ? s : { ...s, volume: 10 }))
+    expect((await ensureLoaded(host)).settings.volume).toBe(10)
   })
-}
+  test('changes go to state, and to the store unless persist is false', async () => {
+    const host = fakeHost()
+    await changeSettings(host, s => ({ ...s, volume: 30 }), { persist: false })
+    expect((await host.state.settings.read())?.volume).toBe(30)
+    expect(host.stored.has('settings')).toBe(false)
+    await changeSettings(host, s => ({ ...s, muted: true }))
+    expect(host.stored.get('settings')).toMatchObject({ volume: 30, muted: true })
+  })
+})
 ```
 
 - [ ] **Step 3: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL. `tests/settings.test.ts` reports that `normalizeSettings` (and the others) are not exported.
+Expected: FAIL. `tests/settings.test.ts` reports `(fail) the file did not load` (`../hooks/host` and the new `settings.ts` exports do not exist yet). Earlier files still pass.
 
-- [ ] **Step 4: Complete `settings.ts`**
+- [ ] **Step 4: Write the Host and fix the contract**
 
-Replace `plugin/hooks/settings.ts` with:
+`plugin/hooks/host.ts`:
 ```ts
-import { read, update } from 'claude-code'
-import type { EngineInterface } from 'claude-code'
+import type {
+  AudioClip,
+  CommandSpec,
+  FsBytes,
+  FsEntry,
+  FsStat,
+  PaneOpenArgs,
+  PlayOptions,
+  ProcessRunInit,
+  ProcessRunResult,
+  ProcessSpawnChunk,
+  ProcessSpawnRequest,
+  TimerCall,
+} from 'claude-code'
 
+import type { ImportedSound, NowPlaying, PaneDraft, Platform, Settings, SoundId, TriggerKey } from '../types'
+
+/** One `$.state` value as the plain modules see it: read it, or change it by compare-and-swap. */
+export type Cell<T> = {
+  read: () => Promise<T>
+  update: (change: (value: T) => T) => Promise<T>
+}
+
+/**
+ * The engine as `register.tsx` binds it from a hook's `$` (`hostOf`), each member spelled
+ * `$.noun.event(...)` there. Every later hook, timer and button press reaches the engine through
+ * this, so the rest of the mod is plain functions over a small interface a test can stand in for.
+ */
+export type Host = {
+  /** `$.plugin.root`: the folder holding plugin.json, where the bundled sounds live. */
+  root: string
+  now: () => Promise<number>
+  after: TimerCall
+  every: TimerCall
+  run: (argv: readonly string[], init?: ProcessRunInit) => Promise<ProcessRunResult>
+  /** `$.process.spawn`: breaking out of the loop over it ends the process. */
+  spawn: (request: ProcessSpawnRequest) => AsyncIterable<ProcessSpawnChunk>
+  play: (clip: AudioClip, options?: PlayOptions) => Promise<void>
+  readText: (path: string) => Promise<string>
+  readBytes: (path: string) => Promise<FsBytes>
+  exists: (path: string) => Promise<boolean>
+  stat: (path: string) => Promise<FsStat>
+  list: (path: string) => Promise<FsEntry[]>
+  /** The environment variables the mod reads; `$.env.get` takes a literal name, so one member each. */
+  env: {
+    os: () => Promise<string | undefined>
+    home: () => Promise<string | undefined>
+    userProfile: () => Promise<string | undefined>
+    configDir: () => Promise<string | undefined>
+    wslEnv: () => Promise<string | undefined>
+  }
+  storeGet: (key: string) => Promise<unknown>
+  storeSet: (key: string, value: unknown) => Promise<void>
+  toast: (text: string) => void
+  /** One line in the debug log. */
+  log: (text: string) => void
+  openPane: (pane: PaneOpenArgs) => Promise<unknown>
+  registerCommand: (spec: CommandSpec) => Promise<unknown>
+  /** The session values in `$.state` (spec §9.2); the render hooks read the same keys. */
+  state: {
+    settings: Cell<Settings | null>
+    imports: Cell<ImportedSound[] | null>
+    nowPlaying: Cell<NowPlaying | null>
+    bandFrame: Cell<number>
+    captionWord: Cell<number>
+    platform: Cell<Platform | null>
+    cooldowns: Cell<Partial<Record<TriggerKey, number>>>
+    toasted: Cell<string[]>
+    paneDraft: Cell<PaneDraft>
+  }
+  /** Writes `tagged[toolUseId]`: the sound a tool row's badge replays, or null for none. */
+  tag: (toolUseId: string, sound: SoundId | null) => Promise<unknown>
+}
+```
+
+In `plugin/types/index.d.ts`, two edits. Inside `declare module 'claude-code'` the name `Settings` resolves to the engine's own settings type (`Readonly<Record<string, unknown>>`), so the settings atom would be typed as that.
+
+**Edit 1.** In `plugin/types/index.d.ts`, replace the line `declare module 'claude-code' {` with:
+```ts
+/**
+ * The settings type under a name of its own: inside `declare module 'claude-code'` below, `Settings`
+ * would name the engine's settings type instead, and the settings atom would lose its type.
+ */
+export type ProducerTagsSettings = Settings
+
+declare module 'claude-code' {
+```
+
+**Edit 2.** In `plugin/types/index.d.ts`, replace the line `settings: Settings | null` with:
+```ts
+      settings: ProducerTagsSettings | null
+```
+
+- [ ] **Step 5: Move `notify.ts` and `state.ts` onto the Host**
+
+A function that takes `$` cannot be imported, and neither can an atom (Global Constraints). The logic of both files is unchanged: `notify.ts`'s helpers take the `Host` where they took `$`, and `state.ts` keeps only what every atom declaration shares.
+
+Replace `plugin/hooks/notify.ts` with:
+```ts
+import type { Host } from './host'
+
+export type ToastCause = 'no-player' | 'playback-failed' | 'corrupt-settings' | `missing:${string}`
+
+/** Shows `text` the first time `cause` happens in this session, never again. */
+export async function toastOnce(host: Host, cause: ToastCause, text: string): Promise<void> {
+  let isFirst = false
+  await host.state.toasted.update(list => {
+    isFirst = !list.includes(cause)
+    return isFirst ? [...list, cause] : list
+  })
+  if (isFirst) host.toast(text)
+}
+
+export function logError(host: Host, where: string, error: unknown): void {
+  const text = error instanceof Error ? error.message : String(error)
+  host.log(`producer-tags: ${where}: ${text}`)
+}
+
+/** Starts work without awaiting it; a failure goes to the debug log, never up (spec §10). */
+export function act(host: Host, where: string, work: () => Promise<unknown>): void {
+  void Promise.resolve()
+    .then(work)
+    .catch(error => logError(host, where, error))
+}
+```
+
+Replace `plugin/hooks/state.ts` with:
+```ts
+import type { PaneDraft } from '../types'
+import { FALLBACK_SOUND } from './constants'
+
+// Each hook file declares the atoms it reads or writes in a const of its own: the engine lists a
+// module's state from `atom({ plugin, key } as const, initial)` calls written in that file, and
+// refuses an imported atom. Those declarations take their initial values from here, so every
+// file reads the same value before anything is written.
+
+/** `captionWord` before a clip has a lit word. */
+export const NO_WORD = -1
+
+export const EMPTY_DRAFT: PaneDraft = {
+  isAdding: false,
+  customPattern: '',
+  customOutcome: 'success',
+  customSound: FALLBACK_SOUND,
+  importPath: '',
+  message: null,
+}
+```
+
+- [ ] **Step 6: Complete `settings.ts`**
+
+`defaultSettings` and `compilePattern` from Task 3 stay as they are.
+
+**Edit 1.** In `plugin/hooks/settings.ts`, replace the line `import type { Settings, TriggerId, TriggerSetting } from '../types'` with:
+```ts
 import type { CustomTrigger, ImportedSound, Outcome, Settings, SoundId, TriggerId, TriggerSetting } from '../types'
 import { CATALOG } from './catalog'
-import { DEFAULT_VOLUME, FALLBACK_SOUND, MAX_CUSTOM, MAX_PATTERN_LENGTH, TRIGGERS } from './constants'
-import { toastOnce } from './notify'
-import { importsAtom, settingsAtom } from './state'
+```
 
+**Edit 2.** In `plugin/hooks/settings.ts`, replace the line `import { DEFAULT_VOLUME, MAX_PATTERN_LENGTH, TRIGGERS } from './constants'` with:
+```ts
+import { DEFAULT_VOLUME, FALLBACK_SOUND, MAX_CUSTOM, MAX_PATTERN_LENGTH, TRIGGERS } from './constants'
+import type { Host } from './host'
+import { toastOnce } from './notify'
+```
+
+**Edit 3.** Append to `plugin/hooks/settings.ts`:
+```ts
 export const SETTINGS_KEY = 'settings'
 export const IMPORTS_KEY = 'imports'
-
-export function defaultSettings(): Settings {
-  const triggers = {} as Record<TriggerId, TriggerSetting>
-  for (const t of TRIGGERS) triggers[t.id] = { enabled: t.enabled, sound: t.sound }
-  return { version: 1, muted: false, volume: DEFAULT_VOLUME, triggers, custom: [], studio: { band: true, badges: true } }
-}
-
-/** A custom pattern as a case-insensitive regex, or null when it is empty, too long or invalid. */
-export function compilePattern(pattern: string): RegExp | null {
-  if (pattern.length === 0 || pattern.length > MAX_PATTERN_LENGTH) return null
-  try {
-    return new RegExp(pattern, 'i')
-  } catch {
-    return null
-  }
-}
 
 export function validatePattern(pattern: string): string | null {
   if (pattern.trim().length === 0) return 'Enter a pattern.'
@@ -1967,7 +2238,7 @@ export function validatePattern(pattern: string): string | null {
   return compilePattern(pattern) === null ? 'That is not a valid regular expression.' : null
 }
 
-const isRecord = (value: unknown): value is Record<string, unknown> =>
+export const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
 /** Version 1 is the first stored shape; later versions convert to it here, before the merge. */
@@ -1975,7 +2246,7 @@ export function migrate(raw: unknown): unknown {
   return raw
 }
 
-const OUTCOMES: readonly Outcome[] = ['success', 'fail', 'any']
+export const OUTCOMES: readonly Outcome[] = ['success', 'fail', 'any']
 
 export function normalizeSettings(raw: unknown, known: ReadonlySet<SoundId>): { settings: Settings; isCorrupt: boolean } {
   const base = defaultSettings()
@@ -2064,58 +2335,154 @@ export function knownSounds(imports: readonly ImportedSound[]): Set<SoundId> {
 
 export type Loaded = { settings: Settings; imports: ImportedSound[] }
 
-export async function loadFromStore($: EngineInterface): Promise<Loaded> {
-  const imports = normalizeImports(await $.store.get(IMPORTS_KEY))
-  const { settings, isCorrupt } = normalizeSettings(await $.store.get(SETTINGS_KEY), knownSounds(imports))
-  await update($, importsAtom, () => imports)
-  await update($, settingsAtom, () => settings)
-  if (isCorrupt) await toastOnce($, 'corrupt-settings', 'Producer Tags: settings were unreadable, so the defaults are back.')
+export async function loadFromStore(host: Host): Promise<Loaded> {
+  const imports = normalizeImports(await host.storeGet(IMPORTS_KEY))
+  const { settings, isCorrupt } = normalizeSettings(await host.storeGet(SETTINGS_KEY), knownSounds(imports))
+  await host.state.imports.update(() => imports)
+  await host.state.settings.update(() => settings)
+  if (isCorrupt) await toastOnce(host, 'corrupt-settings', 'Producer Tags: settings were unreadable, so the defaults are back.')
   return { settings, imports }
 }
 
-/** Settings and imports from session state, loading them from the store the first time. */
-export async function ensureLoaded($: EngineInterface): Promise<Loaded> {
-  const settings = await read($, settingsAtom)
-  const imports = await read($, importsAtom)
+/** Settings and imports from session state, loading them from the store the first time (spec §9.1). */
+export async function ensureLoaded(host: Host): Promise<Loaded> {
+  const settings = await host.state.settings.read()
+  const imports = await host.state.imports.read()
   if (settings !== null && imports !== null) return { settings, imports }
-  return loadFromStore($)
+  return loadFromStore(host)
 }
 
+/** Writes state first, then the store (spec §9.3); `persist: false` writes state only. */
 export async function changeSettings(
-  $: EngineInterface,
+  host: Host,
   change: (settings: Settings) => Settings,
   options: { persist?: boolean } = {},
 ): Promise<Settings> {
-  await ensureLoaded($)
-  const next = (await update($, settingsAtom, current => change(current ?? defaultSettings()))) as Settings
-  if (options.persist !== false) await $.store.set(SETTINGS_KEY, next)
+  const loaded = await ensureLoaded(host)
+  const next = (await host.state.settings.update(current => change(current ?? loaded.settings))) ?? loaded.settings
+  if (options.persist !== false) await host.storeSet(SETTINGS_KEY, next)
   return next
 }
 
-export async function changeImports(
-  $: EngineInterface,
-  change: (imports: ImportedSound[]) => ImportedSound[],
-): Promise<ImportedSound[]> {
-  await ensureLoaded($)
-  const next = (await update($, importsAtom, current => change(current ?? []))) as ImportedSound[]
-  await $.store.set(IMPORTS_KEY, next)
+export async function changeImports(host: Host, change: (imports: ImportedSound[]) => ImportedSound[]): Promise<ImportedSound[]> {
+  const loaded = await ensureLoaded(host)
+  const next = (await host.state.imports.update(current => change(current ?? loaded.imports))) ?? []
+  await host.storeSet(IMPORTS_KEY, next)
   return next
 }
 ```
 
-Update `plugin/hooks/register.tsx` to the version shown under Step 2.
+- [ ] **Step 7: Bind the Host in `register.tsx`**
 
-- [ ] **Step 5: Run the tests to see them pass**
+Replace `plugin/hooks/register.tsx` (Task 1's placeholder) with the version below. `hostOf` is complete from now on; later tasks only add hooks and imports. A member is spelled `$.noun.event(...)` with literal names (`$.env.get('HOME')`), so `claude plugin validate` reads what the module calls.
+```tsx
+import { atom, memberOf, read, update } from 'claude-code'
+import type { EngineInterface, Register } from 'claude-code'
+
+import type { Host } from './host'
+import { logError } from './notify'
+import { loadFromStore } from './settings'
+import { EMPTY_DRAFT, NO_WORD } from './state'
+
+// The atoms of every `$.state` value (spec §9.2). They are declared here, in the one file that
+// reads and writes them: the engine takes an atom only from a const of the calling file.
+const settingsAtom = atom({ plugin: 'producer-tags', key: 'settings' } as const, null)
+const importsAtom = atom({ plugin: 'producer-tags', key: 'imports' } as const, null)
+const nowPlayingAtom = atom({ plugin: 'producer-tags', key: 'nowPlaying' } as const, null)
+const bandFrameAtom = atom({ plugin: 'producer-tags', key: 'bandFrame' } as const, 0)
+const captionWordAtom = atom({ plugin: 'producer-tags', key: 'captionWord' } as const, NO_WORD)
+const taggedAtom = atom({ plugin: 'producer-tags', key: 'tagged' } as const, null)
+const platformAtom = atom({ plugin: 'producer-tags', key: 'platform' } as const, null)
+const cooldownsAtom = atom({ plugin: 'producer-tags', key: 'cooldowns' } as const, {})
+const toastedAtom = atom({ plugin: 'producer-tags', key: 'toasted' } as const, [])
+const paneDraftAtom = atom({ plugin: 'producer-tags', key: 'paneDraft' } as const, EMPTY_DRAFT)
+
+/**
+ * Binds a Host from a hook's `$`. Declared in this file, each member spelled `$.noun.event(...)`,
+ * so the engine reads what the module calls off its source.
+ */
+function hostOf($: EngineInterface): Host {
+  return {
+    root: $.plugin.root,
+    now: () => $.clock.now(),
+    after: (ms, fn) => $.clock.after(ms, fn),
+    every: (ms, fn) => $.clock.every(ms, fn),
+    run: (argv, init) => $.process.run(argv, init),
+    spawn: request => $.process.spawn(request),
+    play: (clip, options) => $.audio.play(clip, options),
+    readText: path => $.fs.read(path),
+    readBytes: path => $.fs.read(path, { as: 'bytes' }),
+    exists: path => $.fs.exists(path),
+    stat: path => $.fs.stat(path),
+    list: path => $.fs.list(path),
+    env: {
+      os: () => $.env.get('OS'),
+      home: () => $.env.get('HOME'),
+      userProfile: () => $.env.get('USERPROFILE'),
+      configDir: () => $.env.get('CLAUDE_CONFIG_DIR'),
+      wslEnv: () => $.env.get('WSLENV'),
+    },
+    storeGet: key => $.store.get(key),
+    storeSet: (key, value) => $.store.set(key, value),
+    toast: text => $.ui.toast(text),
+    log: text => $.ui.log(text, { to: 'debug' }),
+    openPane: pane => $.ui.open(pane),
+    registerCommand: spec => $.command.register(spec),
+    state: {
+      settings: { read: () => read($, settingsAtom), update: change => update($, settingsAtom, change) },
+      imports: { read: () => read($, importsAtom), update: change => update($, importsAtom, change) },
+      nowPlaying: { read: () => read($, nowPlayingAtom), update: change => update($, nowPlayingAtom, change) },
+      bandFrame: { read: () => read($, bandFrameAtom), update: change => update($, bandFrameAtom, change) },
+      captionWord: { read: () => read($, captionWordAtom), update: change => update($, captionWordAtom, change) },
+      platform: { read: () => read($, platformAtom), update: change => update($, platformAtom, change) },
+      cooldowns: { read: () => read($, cooldownsAtom), update: change => update($, cooldownsAtom, change) },
+      toasted: { read: () => read($, toastedAtom), update: change => update($, toastedAtom, change) },
+      paneDraft: { read: () => read($, paneDraftAtom), update: change => update($, paneDraftAtom, change) },
+    },
+    tag: (toolUseId, sound) => update($, memberOf(taggedAtom, { requestId: toolUseId }), () => sound),
+  }
+}
+
+export const register: Register = on => {
+  /**
+   * The engine as `session.start` bound it. Buttons and timers act through it; a hook uses it,
+   * or binds its own `$` while it is still null (before `session.start`, or after a hot reload
+   * until `session.start` runs again and rebinds it).
+   */
+  let host: Host | null = null
+
+  // One session.start hook per plugin: every load-time step of the mod is here.
+  on('session.start', async ($, e, next) => {
+    const engine = hostOf($)
+    host = engine
+    try {
+      await loadFromStore(engine)
+    } catch (error) {
+      logError(engine, 'session.start', error)
+    }
+    return next(e)
+  })
+}
+```
+
+Check the outline: `grep -c "Atom = atom(" plugin/hooks/register.tsx` prints `10`, and `grep -n "^  on('" plugin/hooks/register.tsx` lists only `session.start`.
+
+- [ ] **Step 8: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `tests/settings.test.ts` all pass; earlier files still pass.
+Expected: `tests/settings.test.ts` all pass, and earlier files still pass (`43 pass`, `0 fail`).
 
-- [ ] **Step 6: Type-check, validate, commit**
+- [ ] **Step 9: Type-check, validate, commit**
 
 Run: `npx tsc -p . && claude plugin validate plugin`
+Expected:
+- `tsc` prints nothing.
+- `validate` lists `./register.tsx hooks: session.start` and its calls (`$.store.get (via hostOf)`, …), then `✔ Validation passed`.
+- If it says `$ is passed to "…", imported from …`, a function was handed `$` itself: hand it a `Host` instead.
+
 ```bash
-git add plugin/hooks/settings.ts plugin/hooks/register.tsx plugin/tests/settings.test.ts plugin/tests/world.tsx
-git commit -m "feat: load, migrate and normalize stored settings
+git add plugin/types/index.d.ts plugin/hooks/host.ts plugin/hooks/notify.ts plugin/hooks/state.ts plugin/hooks/settings.ts plugin/hooks/register.tsx plugin/tests/world.tsx plugin/tests/fake-host.ts plugin/tests/settings.test.ts
+git commit -m "feat: bind a Host in session.start and load stored settings
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
@@ -3042,36 +3409,64 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `plugin/hooks/platform.ts`, `plugin/hooks/player.ts`
-- Test: `plugin/tests/player.test.ts` (pure pieces; `play()` and `detectPlatform()` are covered end to end in Task 8)
+- Test: `plugin/tests/platform.test.ts` (through a fake Host), `plugin/tests/player.test.ts` (the pure pieces; `play()` is covered end to end in Task 8)
 
 **Interfaces:**
 - **Consumes:**
+  - `Host` (Task 4)
   - from `library.ts`: `ResolvedSound`, `MIME`
   - from `codec.ts`: `encodeUtf16LeBase64`
   - from `constants.ts`: `WINDOWS_ENGINE`
-  - from `state.ts`: `platformAtom`
-- **Produces from `platform.ts`:** `detectPlatform($): Promise<Platform>`. It is memoized per module and cached in `$.state.platform`.
-- **Produces from `player.ts`, types:**
-  - `type PlayRequest = { sound: ResolvedSound; gain: number; maxMs: number }`
-  - `type PlayEnd = 'ok' | 'stopped' | 'failed'`
-  - `type PlayHandle = { started: Promise<boolean>; ended: Promise<PlayEnd>; stop: () => void }`
-- **Produces from `player.ts`, functions and constants:**
-  - `play($, platform: Platform, request: PlayRequest): PlayHandle`. For `'none'`, it returns a silent handle that "plays" for `durationMs ?? 3000`.
-  - `playDetached($, platform, request): Promise<void>`
-  - `filePathOf(root: string, sound: ResolvedSound): string`
-  - `linuxPlayerArgv(player: LinuxPlayer, path: string, gain: number): string[]`
-  - `windowsEnv(os: OsName, path: string, gain: number, durationMs: number | null, maxMs: number, existingWslEnv: string | undefined): Record<string, string>`
-  - `WINDOWS_SCRIPT`, `LINUX_WRAPPER`, `DETACH_COMMAND`
+- **Produces from `platform.ts`:** `FIND_PLAYER`, `linuxPlayerFrom(stdout)`, and `detectPlatform(host): Promise<Platform>` (probed once per module, cached in `host.state.platform`).
+- **Produces from `player.ts`:**
+  - types `PlayRequest = { sound; gain; maxMs }`, `PlayEnd = 'ok' | 'stopped' | 'failed'`, `PlayHandle = { started: Promise<boolean>; ended: Promise<PlayEnd>; stop: () => void }`
+  - `WINDOWS_SCRIPT`, `WINDOWS_ARGV`, `LINUX_WRAPPER`, `DETACH_COMMAND`
+  - pure: `filePathOf(root, sound)`, `linuxPlayerArgv(player, path, gain)`, `windowsEnv(os, path, gain, durationMs, maxMs, existingWslEnv)`, `startSignal(text)`, `detachedLaunch(platform, path, request, existingWslEnv)`
+  - `play(host, platform, request): PlayHandle`. For `'none'`, it returns a silent handle that "plays" for `durationMs ?? 3000`.
+  - `playDetached(host, platform, request): Promise<void>`
 
 - [ ] **Step 1: Write the failing tests**
+
+`plugin/tests/platform.test.ts`:
+```ts
+import { describe, expect, test } from 'claude-code/testing'
+
+import { detectPlatform, linuxPlayerFrom } from '../hooks/platform'
+import { fakeHost } from './fake-host'
+
+const kernel = (name: string, player = 'pw-play') => (argv: readonly string[]) =>
+  argv[0] === 'uname' ? { stdout: `${name}\n` } : argv[0] === 'sh' ? { stdout: `${player}\n` } : {}
+
+describe('detectPlatform', () => {
+  test('macOS plays through the engine; the answer is kept in state and probed once', async () => {
+    const host = fakeHost({ run: kernel('Darwin') })
+    expect(await detectPlatform(host)).toEqual({ os: 'mac', player: 'audio' })
+    expect(await detectPlatform(host)).toEqual({ os: 'mac', player: 'audio' })
+    expect(host.runs).toHaveLength(1)
+    expect(await host.state.platform.read()).toEqual({ os: 'mac', player: 'audio' })
+  })
+  test('Linux finds its player; WSL is Linux with microsoft in /proc/version; Windows is OS=Windows_NT', async () => {
+    expect(await detectPlatform(fakeHost({ run: kernel('Linux', 'paplay'), files: { '/proc/version': 'Linux version 6.8.0' } }))).toEqual({ os: 'linux', player: 'paplay' })
+    expect(await detectPlatform(fakeHost({ run: kernel('Linux', 'none'), files: { '/proc/version': 'Linux version 6.8.0' } }))).toEqual({ os: 'linux', player: 'none' })
+    expect(await detectPlatform(fakeHost({ run: kernel('Linux'), files: { '/proc/version': 'Linux 6.6-microsoft-standard-WSL2' } }))).toEqual({ os: 'wsl', player: 'powershell' })
+    expect(await detectPlatform(fakeHost({ env: { OS: 'Windows_NT' } }))).toEqual({ os: 'windows', player: 'powershell' })
+  })
+  test('the probe answer', () => {
+    expect(linuxPlayerFrom('paplay\n')).toBe('paplay')
+    expect(linuxPlayerFrom('none\n')).toBe('none')
+    expect(linuxPlayerFrom(undefined)).toBe('none')
+  })
+})
+```
 
 `plugin/tests/player.test.ts`:
 ```ts
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
+import { encodeUtf16LeBase64 } from '../hooks/codec'
 import { resolveSound } from '../hooks/library'
-import { DETACH_COMMAND, WINDOWS_SCRIPT, filePathOf, linuxPlayerArgv, windowsEnv } from '../hooks/player'
+import { DETACH_COMMAND, WINDOWS_SCRIPT, detachedLaunch, filePathOf, linuxPlayerArgv, startSignal, windowsEnv } from '../hooks/player'
 
 describe('player argv and env', () => {
   test('linux players get their own volume flags', () => {
@@ -3098,35 +3493,60 @@ describe('player argv and env', () => {
     expect(filePathOf('/plugins/producer-tags', sound)).toBe(`/plugins/producer-tags/${CATALOG[0]!.file}`)
   })
 })
+
+describe('what the player reads and launches', () => {
+  const sound = resolveSound(CATALOG[0]!.id, [])!
+  const request = { sound, gain: 0.8, maxMs: 15000 }
+  test('the start of playback', () => {
+    expect(startSignal('pid 4242\n')).toEqual({ isStarted: true, pid: '4242' })
+    expect(startSignal('started\n')).toEqual({ isStarted: true, pid: null })
+    expect(startSignal('t\n')).toEqual({ isStarted: false, pid: null })
+  })
+  test('the detached outro per platform', () => {
+    expect(detachedLaunch({ os: 'mac', player: 'audio' }, '/p/x.wav', request, undefined)).toEqual({
+      argv: ['sh', '-c', 'afplay -v "$PT_GAIN" "$PT_FILE" >/dev/null 2>&1 &'],
+      env: { PT_FILE: '/p/x.wav', PT_GAIN: '0.80' },
+    })
+    expect(detachedLaunch({ os: 'linux', player: 'aplay' }, '/p/x.wav', request, undefined)?.argv).toEqual(['sh', '-c', '"$@" >/dev/null 2>&1 &', 'pt-play', 'aplay', '-q', '/p/x.wav'])
+    const wsl = detachedLaunch({ os: 'wsl', player: 'powershell' }, '/p/x.wav', request, 'USERPROFILE/p')
+    expect(wsl?.argv).toEqual(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', DETACH_COMMAND])
+    expect(wsl?.env.WSLENV).toBe('USERPROFILE/p:PT_FILE/p:PT_GAIN:PT_MS:PT_CAP:PT_SCRIPT')
+    expect(wsl?.env.PT_SCRIPT).toBe(encodeUtf16LeBase64(WINDOWS_SCRIPT))
+    expect(detachedLaunch({ os: 'linux', player: 'none' }, '/p/x.wav', request, undefined)).toBeNull()
+  })
+})
 ```
 
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL. `tests/player.test.ts` cannot resolve `../hooks/player`.
+Expected: FAIL. `tests/platform.test.ts` and `tests/player.test.ts` each report `(fail) the file did not load`.
 
 - [ ] **Step 3: Implement `platform.ts`**
 
 `plugin/hooks/platform.ts`:
 ```ts
-import { read, update } from 'claude-code'
-import type { EngineInterface } from 'claude-code'
-
 import type { LinuxPlayer, Platform } from '../types'
-import { platformAtom } from './state'
+import type { Host } from './host'
 
-const FIND_PLAYER =
+/** Prints the first Linux player found, or `none` (spec §6.1). */
+export const FIND_PLAYER =
   'for p in pw-play paplay ffplay aplay; do if command -v "$p" >/dev/null 2>&1; then echo "$p"; exit 0; fi; done; echo none'
+
+export function linuxPlayerFrom(stdout: string | undefined): LinuxPlayer | 'none' {
+  const name = stdout?.trim()
+  return name === 'pw-play' || name === 'paplay' || name === 'ffplay' || name === 'aplay' ? name : 'none'
+}
 
 let probing: Promise<Platform> | null = null
 
 /** Which OS this is and how it plays sound: probed once (spec §6.1), then kept in state for the pane. */
-export async function detectPlatform($: EngineInterface): Promise<Platform> {
-  const cached = await read($, platformAtom)
+export async function detectPlatform(host: Host): Promise<Platform> {
+  const cached = await host.state.platform.read()
   if (cached !== null) return cached
-  probing ??= probe($)
+  probing ??= probe(host)
     .then(async platform => {
-      await update($, platformAtom, () => platform)
+      await host.state.platform.update(() => platform)
       return platform
     })
     .finally(() => {
@@ -3135,23 +3555,18 @@ export async function detectPlatform($: EngineInterface): Promise<Platform> {
   return probing
 }
 
-async function probe($: EngineInterface): Promise<Platform> {
-  if ((await $.env.get('OS')) === 'Windows_NT') return { os: 'windows', player: 'powershell' }
-  const uname = await $.process.run(['uname', '-s']).catch(() => null)
+async function probe(host: Host): Promise<Platform> {
+  if ((await host.env.os()) === 'Windows_NT') return { os: 'windows', player: 'powershell' }
+  const uname = await host.run(['uname', '-s']).catch(() => null)
   const kernel = uname?.stdout.trim()
   if (kernel === 'Darwin') return { os: 'mac', player: 'audio' }
   if (kernel === 'Linux') {
-    const version = await $.fs.read('/proc/version').catch(() => '')
-    if (typeof version === 'string' && /microsoft/i.test(version)) return { os: 'wsl', player: 'powershell' }
-    return { os: 'linux', player: await findLinuxPlayer($) }
+    const version = await host.readText('/proc/version').catch(() => '')
+    if (/microsoft/i.test(version)) return { os: 'wsl', player: 'powershell' }
+    const found = await host.run(['sh', '-c', FIND_PLAYER]).catch(() => null)
+    return { os: 'linux', player: linuxPlayerFrom(found?.stdout) }
   }
   return { os: 'linux', player: 'none' }
-}
-
-async function findLinuxPlayer($: EngineInterface): Promise<LinuxPlayer | 'none'> {
-  const found = await $.process.run(['sh', '-c', FIND_PLAYER]).catch(() => null)
-  const name = found?.stdout.trim()
-  return name === 'pw-play' || name === 'paplay' || name === 'ffplay' || name === 'aplay' ? name : 'none'
 }
 ```
 
@@ -3159,11 +3574,10 @@ async function findLinuxPlayer($: EngineInterface): Promise<LinuxPlayer | 'none'
 
 `plugin/hooks/player.ts`:
 ```ts
-import type { EngineInterface } from 'claude-code'
-
 import type { LinuxPlayer, OsName, Platform } from '../types'
 import { encodeUtf16LeBase64 } from './codec'
 import { WINDOWS_ENGINE } from './constants'
+import type { Host } from './host'
 import { MIME, type ResolvedSound } from './library'
 
 export type PlayRequest = { sound: ResolvedSound; gain: number; maxMs: number }
@@ -3207,6 +3621,9 @@ const SOUNDPLAYER_SCRIPT = [
 ].join('\n')
 
 export const WINDOWS_SCRIPT = WINDOWS_ENGINE === 'mediaplayer' ? MEDIAPLAYER_SCRIPT : SOUNDPLAYER_SCRIPT
+
+/** How Windows and WSL start the play script. */
+export const WINDOWS_ARGV: readonly string[] = ['powershell.exe', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', encodeUtf16LeBase64(WINDOWS_SCRIPT)]
 
 /** Runs "$@" in the background and prints its pid, then a tick every 100 ms while it lives; kills it if killed itself. */
 export const LINUX_WRAPPER =
@@ -3252,9 +3669,34 @@ export function windowsEnv(
   return env
 }
 
-async function powershellEnv($: EngineInterface, platform: Platform, request: PlayRequest): Promise<Record<string, string>> {
-  const existing = platform.os === 'wsl' ? await $.env.get('WSLENV') : undefined
-  return windowsEnv(platform.os, filePathOf($.plugin.root, request.sound), request.gain, request.sound.durationMs, request.maxMs, existing)
+/** What a player's output says once it is playing: `started` (PowerShell) or `pid <n>` (the Linux wrapper). */
+export function startSignal(text: string): { isStarted: boolean; pid: string | null } {
+  const pid = /pid (\d+)/.exec(text)?.[1] ?? null
+  return { isStarted: pid !== null || text.includes('started'), pid }
+}
+
+/**
+ * The fire-and-forget launch of the session.close outro (spec §6.3), or null where nothing plays.
+ * `path` is the clip's file; `existingWslEnv` is `$WSLENV` on WSL.
+ */
+export function detachedLaunch(
+  platform: Platform,
+  path: string,
+  request: PlayRequest,
+  existingWslEnv: string | undefined,
+): { argv: string[]; env: Record<string, string> } | null {
+  const gain = request.gain.toFixed(2)
+  if (platform.player === 'audio') {
+    return { argv: ['sh', '-c', 'afplay -v "$PT_GAIN" "$PT_FILE" >/dev/null 2>&1 &'], env: { PT_FILE: path, PT_GAIN: gain } }
+  }
+  if (platform.player === 'powershell') {
+    const env = windowsEnv(platform.os, path, request.gain, request.sound.durationMs, request.maxMs, existingWslEnv)
+    env.PT_SCRIPT = encodeUtf16LeBase64(WINDOWS_SCRIPT)
+    if (env.WSLENV !== undefined) env.WSLENV += ':PT_SCRIPT'
+    return { argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', DETACH_COMMAND], env }
+  }
+  if (platform.player === 'none') return null
+  return { argv: ['sh', '-c', '"$@" >/dev/null 2>&1 &', 'pt-play', ...linuxPlayerArgv(platform.player, path, request.gain)], env: {} }
 }
 
 function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
@@ -3265,35 +3707,35 @@ function deferred<T>(): { promise: Promise<T>; resolve: (value: T) => void } {
   return { promise, resolve }
 }
 
-export function play($: EngineInterface, platform: Platform, request: PlayRequest): PlayHandle {
+export function play(host: Host, platform: Platform, request: PlayRequest): PlayHandle {
   switch (platform.player) {
     case 'audio':
-      return playWithEngine($, request)
+      return playWithEngine(host, request)
     case 'none':
-      return playSilently($, request.sound.durationMs ?? 3000)
+      return playSilently(host, request.sound.durationMs ?? 3000)
     case 'powershell':
-      return playPowerShell($, platform, request)
+      return playPowerShell(host, platform, request)
     default: {
-      const path = filePathOf($.plugin.root, request.sound)
+      const path = filePathOf(host.root, request.sound)
       const argv = ['sh', '-c', LINUX_WRAPPER, 'pt-play', ...linuxPlayerArgv(platform.player, path, request.gain)]
-      return playProcess($, argv, {}, request.maxMs, pid => $.process.run(['kill', pid]))
+      return playProcess(host, argv, {}, request.maxMs, true)
     }
   }
 }
 
-function playWithEngine($: EngineInterface, request: PlayRequest): PlayHandle {
+function playWithEngine(host: Host, request: PlayRequest): PlayHandle {
   const controller = new AbortController()
   const started = deferred<boolean>()
   const ended = (async (): Promise<PlayEnd> => {
-    const timer = $.clock.after(request.maxMs, () => controller.abort())
+    const timer = host.after(request.maxMs, () => controller.abort())
     try {
       const { source } = request.sound
       const clip =
         source.kind === 'asset'
           ? { asset: source.asset }
-          : { base64: (await $.fs.read(source.path, { as: 'bytes' })).base64, mime: MIME[source.ext] }
+          : { base64: (await host.readBytes(source.path)).base64, mime: MIME[source.ext] }
       started.resolve(true)
-      await $.audio.play(clip, { gain: request.gain, signal: controller.signal })
+      await host.play(clip, { gain: request.gain, signal: controller.signal })
       return controller.signal.aborted ? 'stopped' : 'ok'
     } catch {
       return controller.signal.aborted ? 'stopped' : 'failed'
@@ -3305,9 +3747,9 @@ function playWithEngine($: EngineInterface, request: PlayRequest): PlayHandle {
   return { started: started.promise, ended, stop: () => controller.abort() }
 }
 
-function playSilently($: EngineInterface, ms: number): PlayHandle {
+function playSilently(host: Host, ms: number): PlayHandle {
   const ended = deferred<PlayEnd>()
-  const timer = $.clock.after(ms, () => ended.resolve('ok'))
+  const timer = host.after(ms, () => ended.resolve('ok'))
   return {
     started: Promise.resolve(true),
     ended: ended.promise,
@@ -3318,10 +3760,13 @@ function playSilently($: EngineInterface, ms: number): PlayHandle {
   }
 }
 
-function playPowerShell($: EngineInterface, platform: Platform, request: PlayRequest): PlayHandle {
-  const handle = powershellEnv($, platform, request).then(env =>
-    playProcess($, ['powershell.exe', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand', encodeUtf16LeBase64(WINDOWS_SCRIPT)], env, request.maxMs, null),
-  )
+async function powershellEnv(host: Host, platform: Platform, request: PlayRequest): Promise<Record<string, string>> {
+  const existing = platform.os === 'wsl' ? await host.env.wslEnv() : undefined
+  return windowsEnv(platform.os, filePathOf(host.root, request.sound), request.gain, request.sound.durationMs, request.maxMs, existing)
+}
+
+function playPowerShell(host: Host, platform: Platform, request: PlayRequest): PlayHandle {
+  const handle = powershellEnv(host, platform, request).then(env => playProcess(host, [...WINDOWS_ARGV], env, request.maxMs, false))
   return {
     started: handle.then(h => h.started),
     ended: handle.then(h => h.ended),
@@ -3329,37 +3774,34 @@ function playPowerShell($: EngineInterface, platform: Platform, request: PlayReq
   }
 }
 
-/** A player process that prints `started` (or `pid <n>`) then ticks; stopping breaks the loop, which kills it. */
-function playProcess(
-  $: EngineInterface,
-  argv: string[],
-  env: Record<string, string>,
-  maxMs: number,
-  kill: ((pid: string) => Promise<unknown>) | null,
-): PlayHandle {
+/** A player process that prints `started` (or `pid <n>`) then ticks; stopping breaks the loop, which ends it. */
+function playProcess(host: Host, argv: string[], env: Record<string, string>, maxMs: number, killsPid: boolean): PlayHandle {
   const started = deferred<boolean>()
   let isStopped = false
   let pid: string | null = null
+  const kill = async () => {
+    if (killsPid && pid !== null) await host.run(['kill', pid]).catch(() => undefined)
+  }
   const stop = () => {
     if (isStopped) return
     isStopped = true
-    if (pid !== null && kill !== null) void kill(pid).catch(() => undefined)
+    void kill()
   }
   const ended = (async (): Promise<PlayEnd> => {
-    const timer = $.clock.after(maxMs, stop)
+    const timer = host.after(maxMs, stop)
     let hasStarted = false
     try {
-      for await (const chunk of $.process.spawn({ argv, env })) {
+      for await (const chunk of host.spawn({ argv, env })) {
         if (!hasStarted) {
-          const match = /pid (\d+)/.exec(chunk.text)
-          if (match !== null) pid = match[1]!
-          if (match !== null || chunk.text.includes('started')) {
+          const signal = startSignal(chunk.text)
+          pid = signal.pid ?? pid
+          if (signal.isStarted) {
             hasStarted = true
             started.resolve(true)
           }
         }
         if (isStopped) {
-          if (pid !== null && kill !== null) await kill(pid).catch(() => undefined)
+          await kill()
           break
         }
       }
@@ -3376,32 +3818,25 @@ function playProcess(
 }
 
 /** Fire-and-forget playback that survives the session ending (spec §6.3). */
-export async function playDetached($: EngineInterface, platform: Platform, request: PlayRequest): Promise<void> {
-  const path = filePathOf($.plugin.root, request.sound)
-  if (platform.player === 'audio') {
-    await $.process.run(['sh', '-c', 'afplay -v "$PT_GAIN" "$PT_FILE" >/dev/null 2>&1 &'], {
-      env: { PT_FILE: path, PT_GAIN: request.gain.toFixed(2) },
-    })
-  } else if (platform.player === 'powershell') {
-    const env = await powershellEnv($, platform, request)
-    env.PT_SCRIPT = encodeUtf16LeBase64(WINDOWS_SCRIPT)
-    if (env.WSLENV !== undefined) env.WSLENV += ':PT_SCRIPT'
-    await $.process.run(['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', DETACH_COMMAND], { env })
-  } else if (platform.player !== 'none') {
-    await $.process.run(['sh', '-c', '"$@" >/dev/null 2>&1 &', 'pt-play', ...linuxPlayerArgv(platform.player, path, request.gain)])
-  }
+export async function playDetached(host: Host, platform: Platform, request: PlayRequest): Promise<void> {
+  const existing = platform.os === 'wsl' ? await host.env.wslEnv() : undefined
+  const launch = detachedLaunch(platform, filePathOf(host.root, request.sound), request, existing)
+  if (launch !== null) await host.run(launch.argv, { env: launch.env })
 }
 ```
 
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `tests/player.test.ts` all pass.
+Expected: `tests/platform.test.ts` and `tests/player.test.ts` all pass, and earlier files still pass (`63 pass` in total).
 
-- [ ] **Step 6: Type-check and commit**
+- [ ] **Step 6: Type-check, validate, commit**
+
+Run: `npx tsc -p . && claude plugin validate plugin`
+Expected: `tsc` prints nothing; `✔ Validation passed` (nothing calls these yet, so `register.tsx` is unchanged).
 
 ```bash
-npx tsc -p . && git add plugin/hooks/platform.ts plugin/hooks/player.ts plugin/tests/player.test.ts
+git add plugin/hooks/platform.ts plugin/hooks/player.ts plugin/tests/platform.test.ts plugin/tests/player.test.ts
 git commit -m "feat: detect the platform and route playback per OS
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -3412,49 +3847,82 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ### Task 8: Pipeline and event wiring (`stage.ts`, `pipeline.ts`, `register.tsx`)
 
 **Files:**
-- Create: `plugin/hooks/stage.ts`, `plugin/hooks/pipeline.ts`
-- Modify: `plugin/hooks/register.tsx` (replace it completely)
-- Test: `plugin/tests/pipeline.test.ts`
+- Create: `plugin/hooks/stage.ts` (pure), `plugin/hooks/pipeline.ts`
+- Modify: `plugin/hooks/register.tsx` (imports, one closure variable, two `session.start` lines, the trigger and `/mute` hooks)
+- Test: `plugin/tests/stage.test.ts`, `plugin/tests/pipeline.test.ts`
 
 **Interfaces:**
 - **Consumes:**
-  - `ensureLoaded`, `loadFromStore`, `changeSettings` (Task 4)
+  - `Host` and the stored `host` (Task 4); `ensureLoaded`, `loadFromStore`, `changeSettings`; `toastOnce`, `act`, `logError`
   - `resolveSound` (Task 6)
   - `detectPlatform`, `play`, `playDetached`, `PlayHandle`, `PlayEnd` (Task 7)
   - the trigger functions and `Hit` (Task 3)
-  - `act`, `toastOnce`, `logError` (Task 1)
-  - the atoms
-  - from `tests/world.tsx`: `world`, `bash`, `committed`
-- **Produces from `stage.ts`:**
-  - `isLive(np: NowPlaying | null, now: number): boolean`. True when the entry holds the stage for claims: not ended and not past its deadline.
-  - `isOnStage(np: NowPlaying, now: number): boolean`. True when the band should show the entry: started, and neither past its tail nor past its deadline.
+  - from the tests: `world`, `bash`, `committed`, `START`, `fakeHost`
+- **Produces from `stage.ts` (pure):** `isLive(np, now)`, `isOnStage(np, now)`, `isCoolingDown(cooldowns, key, now)`, `defaultSoundFor(key)`, `claimFor(sound, key, now, toolUseId, nonce)`, `startedEntry(np, startedAt)`, `clearAtOf(np)`.
 - **Produces from `pipeline.ts`:**
-  - `isCoolingDown(cooldowns, key, now): boolean`
-  - `fire($, hit: Hit, toolUseId?: string | null): Promise<void>`. A hit with `key: 'preview'` interrupts and skips the cooldown.
-  - `firePreview($, sound: SoundId): Promise<void>`
-  - `fireDetached($, hit: Hit): Promise<void>`
-  - `stopCurrent(): void`
-  - `toggleMute($): Promise<Settings>`, an atomic flip that stops the clip when muting
-  - `recoverStage($): Promise<void>`, the reload handling called by `session.start`
-- **Hooks in `register.tsx`:**
-  - `session.start`
-  - `tool.call` (Bash), with `.catch`
-  - `classic.PostModelSwitch`, `classic.SessionStart`, `classic.Stop`
-  - `session.end`
-  - `command.run` for `mute` / `tags-mute`
+  - `fire(host, hit, toolUseId?): Promise<boolean>`. A hit with `key: 'preview'` interrupts and skips the cooldown; the answer says whether it started.
+  - `firePreview(host, sound)`, `stopCurrent()`, `schedule(host, pick, toolUseId?)`, `fireDetached(host, hit)`
+  - `toggleMute(host)` (an atomic flip that stops the clip when muting), `muteAnswer(host)`, `registerMute(host)`
+  - `recoverStage(host)`, the reload handling called by `session.start`
+- **Hooks added in `register.tsx`:** `tool.call` (Bash) with `.catch`; `classic.PostModelSwitch`, `classic.SessionStart`, `classic.Stop`; `session.end`; `command.run` for `mute` / `tags-mute`. `session.start` now also recovers the stage and registers `/mute`.
+
+**Which binding each caller uses.** A hook hands the plain functions `host ?? hostOf($)`: the binding `session.start` stored, or its own `$` before that (`classic.SessionStart` can come first) and after a hot reload until `session.start` runs again. Work a hook schedules (`schedule` → `host.after(0, …)`) and the clip's own timers keep the binding they were given. `session.end` always binds its own `$`: the outro launch is then one of that dispatch's calls, inside its 1.5 s cut, and does not lean on a binding made before a reload.
 
 Task 10 adds one line to `fire` (start the band animation).
 
 - [ ] **Step 1: Write the failing tests**
+
+`plugin/tests/stage.test.ts`:
+```ts
+import { describe, expect, test } from 'claude-code/testing'
+
+import { CATALOG } from '../hooks/catalog'
+import { resolveSound } from '../hooks/library'
+import { claimFor, clearAtOf, defaultSoundFor, isCoolingDown, isLive, isOnStage, startedEntry } from '../hooks/stage'
+
+const sound = resolveSound(CATALOG[0]!.id, [])!
+
+describe('the stage', () => {
+  test('a claim is live for 5 s; once started, for its length plus 1 s', () => {
+    const claim = claimFor(sound, 'git.commit', 1000, 'tu1', 'n')
+    expect(claim).toMatchObject({ token: `${sound.id}:1000:n`, startedAt: null, deadline: 6000, toolUseId: 'tu1' })
+    expect(isLive(claim, 5999)).toBe(true)
+    expect(isLive(claim, 6000)).toBe(false)
+    expect(isOnStage(claim, 2000)).toBe(false)
+    const started = startedEntry(claim, 2000)
+    expect(started.deadline).toBe(2000 + sound.durationMs! + 1000)
+    expect(isOnStage(started, 2500)).toBe(true)
+    expect(startedEntry({ ...claim, durationMs: null }, 2000).deadline).toBe(2000 + 15000 + 1000)
+  })
+  test('an ended entry stays on stage for the tail and stops counting after it', () => {
+    const ended = { ...startedEntry(claimFor(sound, 'git.commit', 0, null, 'n'), 0), endedAt: 1500 }
+    expect(isLive(ended, 1600)).toBe(false)
+    expect(isOnStage(ended, 2499)).toBe(true)
+    expect(isOnStage(ended, 2500)).toBe(false)
+    expect(clearAtOf(ended)).toBe(2500)
+    expect(clearAtOf(claimFor(sound, 'git.commit', 0, null, 'n'))).toBe(5000)
+  })
+  test('cooldowns are per key; previews and customs fall back to the 808', () => {
+    expect(isCoolingDown({ 'git.commit': 1000 }, 'git.commit', 30_999)).toBe(true)
+    expect(isCoolingDown({ 'git.commit': 1000 }, 'git.commit', 31_000)).toBe(false)
+    expect(isCoolingDown({ 'git.commit': 1000 }, 'git.push', 2000)).toBe(false)
+    expect(defaultSoundFor('git.push')).toBe('pt:did-it-again')
+    expect(defaultSoundFor('custom:c1')).toBe('pt:808-boom')
+  })
+})
+```
 
 `plugin/tests/pipeline.test.ts`:
 ```ts
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
+import { fire } from '../hooks/pipeline'
 import { LINUX_WRAPPER } from '../hooks/player'
+import { defaultSettings } from '../hooks/settings'
 import type { NowPlaying } from '../types'
-import { bash, committed, world, type World } from './world'
+import { fakeHost } from './fake-host'
+import { START, bash, committed, world, type World } from './world'
 
 const pushed = { result: { stdout: '', stderr: '', interrupted: false, gitOperation: { push: { branch: 'main' } } } }
 const playing = (w: World) => w.state.get('nowPlaying') as NowPlaying | null | undefined
@@ -3462,10 +3930,30 @@ const asset = (id: string) => ({ asset: CATALOG.find(c => c.id === id)!.file })
 const durationOf = (id: string) => CATALOG.find(c => c.id === id)!.durationMs
 const run = (command: string) => ({ command, args: '' }) as never
 
+describe('fire, through a Host', () => {
+  test('muted, cooling down, or held by a live clip: nothing is claimed or played', async () => {
+    const muted = fakeHost()
+    await muted.state.settings.update(() => ({ ...defaultSettings(), muted: true }))
+    await muted.state.imports.update(() => [])
+    expect(await fire(muted, { key: 'git.commit', sound: 'pt:anthropic-trust' })).toBe(false)
+    expect(await muted.state.nowPlaying.read()).toBeNull()
+
+    const cooling = fakeHost()
+    await cooling.state.cooldowns.update(() => ({ 'git.commit': 1_000_000 - 1000 }))
+    expect(await fire(cooling, { key: 'git.commit', sound: 'pt:anthropic-trust' })).toBe(false)
+
+    const held = fakeHost()
+    const live = { token: 't', soundId: 'pt:riser', key: 'git.push' as const, caption: 'x', riff: 'r', claimedAt: 0, startedAt: 999_000, endedAt: null, durationMs: 2000, deadline: 1_002_000, peaks: null, toolUseId: null }
+    await held.state.nowPlaying.update(() => live)
+    expect(await fire(held, { key: 'git.commit', sound: 'pt:anthropic-trust' })).toBe(false)
+    expect(await held.state.nowPlaying.read()).toEqual(live)
+  })
+})
+
 describe('macOS playback', () => {
   test('a commit plays its tag after the tool call settles, at 80%, and the result is untouched', async ($, on) => {
     const w = world(on, { audioMs: 3000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     w.bash = committed()
     const result = await $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as never)
     expect(result).toMatchObject(committed())
@@ -3482,14 +3970,14 @@ describe('macOS playback', () => {
 
   test('the badge is written for the tool call that started a tag', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     const id = await bash($, w, 'git commit -m x', committed())
     expect(w.state.get(`tagged:${id}`)).toBe('pt:anthropic-trust')
   })
 
   test('30 s cooldown per trigger', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m a', committed())
     await w.clock.advance(1000)
     await bash($, w, 'git commit -m b', committed())
@@ -3501,7 +3989,7 @@ describe('macOS playback', () => {
 
   test('a tag that fires while another plays is dropped, not queued', async ($, on) => {
     const w = world(on, { audioMs: 3000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     await bash($, w, 'git push', pushed)
     await w.clock.advance(6000)
@@ -3510,7 +3998,7 @@ describe('macOS playback', () => {
 
   test('two tags claimed in the same tick: exactly one plays', async ($, on) => {
     const w = world(on, { audioMs: 3000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     w.bashBy = { 'git commit -m x': committed(), 'git push': pushed }
     await Promise.all([
       $.tool.call({ tool: 'Bash', command: 'git commit -m x' } as never),
@@ -3522,10 +4010,10 @@ describe('macOS playback', () => {
 
   test('a clip that never reports its end stops blocking at its deadline; session.start clears it', async ($, on) => {
     const w = world(on, { audioMs: 600_000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     await w.clock.advance(durationOf('pt:anthropic-trust') + 1001)
-    await $.session.start({} as never)
+    await $.session.start(START)
     expect(playing(w)).toBeNull()
     await bash($, w, 'git push', pushed)
     expect(w.plays).toHaveLength(2)
@@ -3533,9 +4021,9 @@ describe('macOS playback', () => {
 
   test('an entry orphaned by a reload mid-clip is cleared at its deadline', async ($, on) => {
     const w = world(on, { audioMs: 600_000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
-    await $.session.start({} as never)
+    await $.session.start(START)
     expect(playing(w)).not.toBeNull()
     await w.clock.advance(durationOf('pt:anthropic-trust') + 1001)
     expect(playing(w)).toBeNull()
@@ -3543,7 +4031,7 @@ describe('macOS playback', () => {
 
   test('/mute toggles and silences', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     expect(w.registered).toContain('mute')
     expect((await $.command.run(run('mute'))).text).toBe('Tags muted.')
     expect(w.stored.get('settings')).toMatchObject({ muted: true })
@@ -3554,7 +4042,7 @@ describe('macOS playback', () => {
 
   test('/tags-mute when /mute is taken', async ($, on) => {
     const w = world(on, { refuse: ['mute'] })
-    await $.session.start({} as never)
+    await $.session.start(START)
     expect(w.registered).toContain('tags-mute')
     expect((await $.command.run(run('tags-mute'))).text).toBe('Tags muted.')
   })
@@ -3568,7 +4056,7 @@ describe('macOS playback', () => {
       files: { '/x/mine.mp3': { base64: 'SUQz' } },
       store: { imports, settings: { triggers: { 'git.commit': { enabled: true, sound: 'user:mine' }, 'git.push': { enabled: true, sound: 'user:gone' } } } },
     })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     expect(w.plays[0]!.clip).toEqual({ base64: 'SUQz', mime: 'audio/mpeg' })
     await w.clock.advance(20_000)
@@ -3579,7 +4067,7 @@ describe('macOS playback', () => {
 
   test('a failed play toasts once, clears the claim and removes the badge', async ($, on) => {
     const w = world(on, { audioFails: true })
-    await $.session.start({} as never)
+    await $.session.start(START)
     const id = await bash($, w, 'git commit -m x', committed())
     await w.clock.advance(2000)
     expect(w.toasts.filter(t => t.includes('could not play'))).toHaveLength(1)
@@ -3605,7 +4093,7 @@ describe('macOS playback', () => {
     async ($, on) => {
       const w = world(on)
       w.bash = committed()
-      await $.session.start({} as never)
+      await $.session.start(START)
       await w.clock.settle()
       expect(w.toolUseIds).toHaveLength(1)
       expect(w.plays).toHaveLength(0)
@@ -3616,7 +4104,7 @@ describe('macOS playback', () => {
 describe('other platforms', () => {
   test('linux: pw-play inside the tick wrapper; mute kills the pid and ends the process', { timeoutMs: 20_000 }, async ($, on) => {
     const w = world(on, { os: 'linux', linuxPlayer: 'pw-play', spawnTicks: 50 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     const spawn = w.spawns[0]!
     expect(spawn.argv.slice(0, 4)).toEqual(['sh', '-c', LINUX_WRAPPER, 'pt-play'])
@@ -3629,7 +4117,7 @@ describe('other platforms', () => {
 
   test('a clip still playing at 15 s is stopped (the cap)', { timeoutMs: 20_000 }, async ($, on) => {
     const w = world(on, { os: 'linux', spawnTicks: 400 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     await w.clock.advance(15_200)
     expect(w.spawns[0]!.isEnded).toBe(true)
@@ -3639,7 +4127,7 @@ describe('other platforms', () => {
 
   test('linux without a player: captions only, one toast', async ($, on) => {
     const w = world(on, { os: 'linux', linuxPlayer: 'none' })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     expect(w.spawns).toHaveLength(0)
     expect(playing(w)?.startedAt).toBeGreaterThan(0)
@@ -3648,7 +4136,7 @@ describe('other platforms', () => {
 
   test('wsl: powershell -STA -EncodedCommand with data in env and WSLENV path translation', async ($, on) => {
     const w = world(on, { os: 'wsl', env: { WSLENV: 'USERPROFILE/p' } })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     const spawn = w.spawns[0]!
     expect(spawn.argv.slice(0, 5)).toEqual(['powershell.exe', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand'])
@@ -3658,7 +4146,7 @@ describe('other platforms', () => {
 
   test('windows: powershell without WSLENV', async ($, on) => {
     const w = world(on, { os: 'windows' })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     expect(w.spawns[0]!.argv[0]).toBe('powershell.exe')
     expect(w.spawns[0]!.env?.WSLENV).toBeUndefined()
@@ -3668,7 +4156,7 @@ describe('other platforms', () => {
 describe('non-Bash triggers', () => {
   test('model switch to Fable plays; turn.done and session.open are off by default', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     await $.classic.PostModelSwitch({ from_model: 'claude-opus-5-5', to_model: 'claude-fable-5-1', requested_model: 'fable', source: 'command', context_tokens: 0 } as never)
     await w.clock.settle()
     expect(w.plays.map(p => p.clip)).toEqual([asset('pt:fable-on-beat')])
@@ -3681,7 +4169,7 @@ describe('non-Bash triggers', () => {
 
   test('exit plays the outro detached through afplay; /clear does not', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     await $.session.end({ reason: 'clear', sessionId: 's', resume: {} } as never)
     await w.clock.settle()
     expect(w.runs.filter(r => r.argv[2]?.includes('afplay'))).toHaveLength(0)
@@ -3699,14 +4187,15 @@ Subagent Bash calls fire tags because the hook never checks `agentId`. The test 
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL in `tests/pipeline.test.ts`. For example, the first test's `expect(w.plays).toEqual([...])` sees an empty array.
+Expected: FAIL. `tests/stage.test.ts` and `tests/pipeline.test.ts` each report `(fail) the file did not load`.
 
 - [ ] **Step 3: Implement `stage.ts`**
 
 `plugin/hooks/stage.ts`:
 ```ts
-import type { NowPlaying } from '../types'
-import { END_TAIL_MS } from './constants'
+import type { NowPlaying, SoundId, TriggerKey } from '../types'
+import { CLAIM_GRACE_MS, COOLDOWN_MS, END_TAIL_MS, FALLBACK_SOUND, MAX_CLIP_MS, TRIGGERS } from './constants'
+import type { ResolvedSound } from './library'
 
 /** Holds the stage for claims: not ended and not past its deadline (spec §5). */
 export function isLive(np: NowPlaying | null, now: number): boolean {
@@ -3718,74 +4207,22 @@ export function isOnStage(np: NowPlaying, now: number): boolean {
   if (np.startedAt === null || now >= np.deadline) return false
   return np.endedAt === null || now < np.endedAt + END_TAIL_MS
 }
-```
-
-- [ ] **Step 4: Implement `pipeline.ts`**
-
-`plugin/hooks/pipeline.ts`:
-```ts
-import { memberOf, read, update } from 'claude-code'
-import type { EngineInterface } from 'claude-code'
-
-import type { ImportedSound, NowPlaying, Settings, SoundId, TriggerKey } from '../types'
-import { CLAIM_GRACE_MS, COOLDOWN_MS, END_TAIL_MS, FALLBACK_SOUND, MAX_CLIP_MS, TRIGGERS } from './constants'
-import { resolveSound, type ResolvedSound } from './library'
-import { act, toastOnce } from './notify'
-import { detectPlatform } from './platform'
-import { play, playDetached, type PlayEnd, type PlayHandle } from './player'
-import { changeSettings, ensureLoaded } from './settings'
-import { isLive } from './stage'
-import { cooldownsAtom, nowPlayingAtom, taggedAtom } from './state'
-import type { Hit } from './triggers'
-
-let current: { token: string; handle: PlayHandle } | null = null
 
 export function isCoolingDown(cooldowns: Partial<Record<TriggerKey, number>>, key: TriggerKey, now: number): boolean {
   const last = cooldowns[key]
   return last !== undefined && now - last < COOLDOWN_MS
 }
 
-function defaultSoundFor(key: TriggerKey): SoundId {
+export function defaultSoundFor(key: TriggerKey): SoundId {
   return TRIGGERS.find(t => t.id === key)?.sound ?? FALLBACK_SOUND
 }
 
-/** Changes `nowPlaying` only while it is still this clip's. */
-function updateIfMine($: EngineInterface, token: string, change: (np: NowPlaying) => NowPlaying | null) {
-  return update($, nowPlayingAtom, np => (np?.token === token ? change(np) : np))
-}
-
-async function setTag($: EngineInterface, toolUseId: string | null, sound: SoundId | null): Promise<void> {
-  if (toolUseId !== null) await update($, memberOf(taggedAtom, { requestId: toolUseId }), () => sound)
-}
-
-async function failPlayback($: EngineInterface, token: string, toolUseId: string | null): Promise<void> {
-  await updateIfMine($, token, () => null)
-  await setTag($, toolUseId, null)
-  await toastOnce($, 'playback-failed', 'Producer Tags: this machine could not play the tag.')
-}
-
-async function resolveOrFallback($: EngineInterface, hit: Hit, imports: readonly ImportedSound[]): Promise<ResolvedSound | null> {
-  const wanted = resolveSound(hit.sound, imports)
-  if (wanted !== null && (wanted.source.kind === 'asset' || (await $.fs.exists(wanted.source.path)))) return wanted
-  if (wanted !== null) await toastOnce($, `missing:${wanted.id}`, `Producer Tags: ${wanted.caption} is missing, so the default plays.`)
-  return resolveSound(defaultSoundFor(hit.key), imports)
-}
-
-/** Plays a hit. Triggers respect the cooldown and the claim; previews (`key: 'preview'`) interrupt and skip the cooldown (spec §5). */
-export async function fire($: EngineInterface, hit: Hit, toolUseId: string | null = null): Promise<void> {
-  const isPreview = hit.key === 'preview'
-  const { settings, imports } = await ensureLoaded($)
-  if (settings.muted) return
-  const now = await $.clock.now()
-  if (!isPreview && isCoolingDown(await read($, cooldownsAtom), hit.key, now)) return
-  const sound = await resolveOrFallback($, hit, imports)
-  if (sound === null) return
-
-  const token = `${sound.id}:${now}:${Math.random().toString(36).slice(2, 8)}`
-  const mine: NowPlaying = {
-    token,
+/** A fresh claim on the stage: live for CLAIM_GRACE_MS, which covers the player's startup. */
+export function claimFor(sound: ResolvedSound, key: TriggerKey, now: number, toolUseId: string | null, nonce: string): NowPlaying {
+  return {
+    token: `${sound.id}:${now}:${nonce}`,
     soundId: sound.id,
-    key: hit.key,
+    key,
     caption: sound.caption,
     riff: sound.riff,
     claimedAt: now,
@@ -3796,192 +4233,260 @@ export async function fire($: EngineInterface, hit: Hit, toolUseId: string | nul
     peaks: sound.peaks,
     toolUseId,
   }
-  if (isPreview) {
-    stopCurrent()
-    await update($, nowPlayingAtom, () => mine)
-  } else {
-    const claimed = await update($, nowPlayingAtom, np => (isLive(np, now) ? np : mine))
-    if (claimed?.token !== token) return
-    await update($, cooldownsAtom, cooldowns => ({ ...cooldowns, [hit.key]: now }))
-  }
-
-  const platform = await detectPlatform($)
-  if (platform.player === 'none') {
-    await toastOnce($, 'no-player', 'Producer Tags: no audio player found, so tags show as captions only.')
-  }
-  const handle = play($, platform, { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
-  current = { token, handle }
-  if (!(await handle.started)) {
-    await failPlayback($, token, null)
-    return
-  }
-  const startedAt = await $.clock.now()
-  await updateIfMine($, token, np => ({ ...np, startedAt, deadline: startedAt + (sound.durationMs ?? MAX_CLIP_MS) + END_TAIL_MS }))
-  await setTag($, toolUseId, sound.id)
-  void handle.ended.then(result => act($, 'finish', () => finish($, token, toolUseId, result)))
 }
 
-async function finish($: EngineInterface, token: string, toolUseId: string | null, result: PlayEnd): Promise<void> {
+/** The entry once playback has started: live until its length (or the 15 s cap) plus the tail. */
+export function startedEntry(np: NowPlaying, startedAt: number): NowPlaying {
+  return { ...np, startedAt, deadline: startedAt + (np.durationMs ?? MAX_CLIP_MS) + END_TAIL_MS }
+}
+
+/** When a leftover entry stops counting: its deadline if its end was never reported, else after the tail. */
+export function clearAtOf(np: NowPlaying): number {
+  return np.endedAt === null ? np.deadline : np.endedAt + END_TAIL_MS
+}
+```
+
+- [ ] **Step 4: Implement `pipeline.ts`**
+
+`plugin/hooks/pipeline.ts`:
+```ts
+import type { ImportedSound, NowPlaying, Settings, SoundId } from '../types'
+import { END_TAIL_MS, MAX_CLIP_MS } from './constants'
+import type { Host } from './host'
+import { resolveSound, type ResolvedSound } from './library'
+import { act, logError, toastOnce } from './notify'
+import { detectPlatform } from './platform'
+import { play, playDetached, type PlayEnd, type PlayHandle } from './player'
+import { changeSettings, ensureLoaded } from './settings'
+import { claimFor, clearAtOf, defaultSoundFor, isCoolingDown, isLive, startedEntry } from './stage'
+import type { Hit } from './triggers'
+
+/** The clip this module started; a reloaded module starts with none (recoverStage). */
+let current: { token: string; handle: PlayHandle } | null = null
+
+/** Changes `nowPlaying` only while it is still this clip's. */
+function updateIfMine(host: Host, token: string, change: (np: NowPlaying) => NowPlaying | null): Promise<NowPlaying | null> {
+  return host.state.nowPlaying.update(np => (np?.token === token ? change(np) : np))
+}
+
+async function setTag(host: Host, toolUseId: string | null, sound: SoundId | null): Promise<void> {
+  if (toolUseId !== null) await host.tag(toolUseId, sound)
+}
+
+async function failPlayback(host: Host, token: string, toolUseId: string | null): Promise<void> {
+  await updateIfMine(host, token, () => null)
+  await setTag(host, toolUseId, null)
+  await toastOnce(host, 'playback-failed', 'Producer Tags: this machine could not play the tag.')
+}
+
+async function resolveOrFallback(host: Host, hit: Hit, imports: readonly ImportedSound[]): Promise<ResolvedSound | null> {
+  const wanted = resolveSound(hit.sound, imports)
+  if (wanted !== null && (wanted.source.kind === 'asset' || (await host.exists(wanted.source.path)))) return wanted
+  if (wanted !== null) await toastOnce(host, `missing:${wanted.id}`, `Producer Tags: ${wanted.caption} is missing, so the default plays.`)
+  return resolveSound(defaultSoundFor(hit.key), imports)
+}
+
+/**
+ * Plays a hit and answers whether it started. Triggers respect the cooldown and the claim;
+ * previews (`key: 'preview'`) interrupt and skip the cooldown (spec §5).
+ */
+export async function fire(host: Host, hit: Hit, toolUseId: string | null = null): Promise<boolean> {
+  const isPreview = hit.key === 'preview'
+  const { settings, imports } = await ensureLoaded(host)
+  if (settings.muted) return false
+  const now = await host.now()
+  if (!isPreview && isCoolingDown(await host.state.cooldowns.read(), hit.key, now)) return false
+  const sound = await resolveOrFallback(host, hit, imports)
+  if (sound === null) return false
+
+  const mine = claimFor(sound, hit.key, now, toolUseId, Math.random().toString(36).slice(2, 8))
+  const token = mine.token
+  if (isPreview) {
+    stopCurrent()
+    await host.state.nowPlaying.update(() => mine)
+  } else {
+    const claimed = await host.state.nowPlaying.update(np => (isLive(np, now) ? np : mine))
+    if (claimed?.token !== token) return false
+    await host.state.cooldowns.update(cooldowns => ({ ...cooldowns, [hit.key]: now }))
+  }
+
+  const platform = await detectPlatform(host)
+  if (platform.player === 'none') await toastOnce(host, 'no-player', 'Producer Tags: no audio player found, so tags show as captions only.')
+  const handle = play(host, platform, { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
+  current = { token, handle }
+  if (!(await handle.started)) {
+    await failPlayback(host, token, null)
+    return false
+  }
+  const startedAt = await host.now()
+  await updateIfMine(host, token, np => startedEntry(np, startedAt))
+  await setTag(host, toolUseId, sound.id)
+  void handle.ended.then(result => act(host, 'finish', () => finish(host, token, toolUseId, result)))
+  return true
+}
+
+async function finish(host: Host, token: string, toolUseId: string | null, result: PlayEnd): Promise<void> {
   if (current?.token === token) current = null
   if (result === 'failed') {
-    await failPlayback($, token, toolUseId)
+    await failPlayback(host, token, toolUseId)
     return
   }
-  const endedAt = await $.clock.now()
-  await updateIfMine($, token, np => ({ ...np, endedAt }))
-  $.clock.after(END_TAIL_MS, () => act($, 'clear', () => updateIfMine($, token, () => null)))
+  const endedAt = await host.now()
+  await updateIfMine(host, token, np => ({ ...np, endedAt }))
+  host.after(END_TAIL_MS, () => act(host, 'clear', () => updateIfMine(host, token, () => null)))
 }
 
 export function stopCurrent(): void {
   current?.handle.stop()
 }
 
-export function firePreview($: EngineInterface, sound: SoundId): Promise<void> {
-  return fire($, { key: 'preview', sound })
+export function firePreview(host: Host, sound: SoundId): Promise<boolean> {
+  return fire(host, { key: 'preview', sound })
+}
+
+/** Runs tag work in its own dispatch once the current one resolves (spec §3). */
+export function schedule(host: Host, pick: (settings: Settings) => Hit | null, toolUseId: string | null = null): void {
+  host.after(0, () =>
+    act(host, 'trigger', async () => {
+      const { settings } = await ensureLoaded(host)
+      const hit = pick(settings)
+      if (hit !== null) await fire(host, hit, toolUseId)
+    }),
+  )
 }
 
 /** The session.close outro: detached so it outlives the exit (spec §6.3). */
-export async function fireDetached($: EngineInterface, hit: Hit): Promise<void> {
-  const { settings, imports } = await ensureLoaded($)
+export async function fireDetached(host: Host, hit: Hit): Promise<void> {
+  const { settings, imports } = await ensureLoaded(host)
   if (settings.muted) return
   const sound = resolveSound(hit.sound, imports) ?? resolveSound(defaultSoundFor(hit.key), imports)
   if (sound === null) return
-  await playDetached($, await detectPlatform($), { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
+  await playDetached(host, await detectPlatform(host), { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
 }
 
-export async function toggleMute($: EngineInterface): Promise<Settings> {
-  const settings = await changeSettings($, s => ({ ...s, muted: !s.muted }))
+/** An atomic flip that stops the clip when muting. */
+export async function toggleMute(host: Host): Promise<Settings> {
+  const settings = await changeSettings(host, s => ({ ...s, muted: !s.muted }))
   if (settings.muted) stopCurrent()
   return settings
+}
+
+/** `/mute`'s answer, a few words because the model reads it too (spec §8.1). */
+export async function muteAnswer(host: Host): Promise<{ text: string }> {
+  try {
+    const settings = await toggleMute(host)
+    return { text: settings.muted ? 'Tags muted.' : 'Tags unmuted.' }
+  } catch (error) {
+    logError(host, 'mute', error)
+    return { text: 'Producer Tags hit an error.' }
+  }
+}
+
+/** Registers `/mute`, or `/tags-mute` when the name is refused, and answers which. */
+export async function registerMute(host: Host): Promise<'mute' | 'tags-mute'> {
+  const description = 'Mute or unmute Producer Tags'
+  try {
+    await host.registerCommand({ name: 'mute', description, immediate: true })
+    return 'mute'
+  } catch {
+    await host.registerCommand({ name: 'tags-mute', description, immediate: true })
+    return 'tags-mute'
+  }
 }
 
 /**
  * On a (re)load the fresh module owns no player: forget the old handle, drop an entry already
  * past its end, and clear an unfinished one at its deadline so the band can never stick (spec §5).
  */
-export async function recoverStage($: EngineInterface): Promise<void> {
+export async function recoverStage(host: Host): Promise<void> {
   current = null
-  const np = await read($, nowPlayingAtom)
+  const np = await host.state.nowPlaying.read()
   if (np === null) return
-  const now = await $.clock.now()
-  const clearAt = np.endedAt === null ? np.deadline : np.endedAt + END_TAIL_MS
+  const now = await host.now()
+  const clearAt = clearAtOf(np)
   if (now >= clearAt) {
-    await updateIfMine($, np.token, () => null)
+    await updateIfMine(host, np.token, () => null)
     return
   }
   const token = np.token
-  $.clock.after(clearAt - now, () => act($, 'recover', () => updateIfMine($, token, () => null)))
+  host.after(clearAt - now, () => act(host, 'recover', () => updateIfMine(host, token, () => null)))
 }
 ```
 
-- [ ] **Step 5: Replace `register.tsx`**
+- [ ] **Step 5: Wire the events in `register.tsx`**
 
-`plugin/hooks/register.tsx`:
+**Edit 1.** In `plugin/hooks/register.tsx`, add these imports (keep the relative imports sorted by path):
 ```tsx
-import type { EngineInterface, Register } from 'claude-code'
+import { fireDetached, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
+import { bashFacts, hitFor, modelTrigger, pickBashHit, sessionCloseTrigger, sessionOpenTrigger, turnDoneTrigger } from './triggers'
+```
 
-import type { Settings } from '../types'
+**Edit 2.** In `plugin/hooks/register.tsx`, replace the line `import { logError } from './notify'` with:
+```tsx
 import { act, logError } from './notify'
-import { fire, fireDetached, recoverStage, toggleMute } from './pipeline'
+```
+
+**Edit 3.** In `plugin/hooks/register.tsx`, replace the line `import { loadFromStore } from './settings'` with:
+```tsx
 import { ensureLoaded, loadFromStore } from './settings'
-import {
-  bashFacts,
-  hitFor,
-  modelTrigger,
-  pickBashHit,
-  sessionCloseTrigger,
-  sessionOpenTrigger,
-  turnDoneTrigger,
-  type Hit,
-} from './triggers'
+```
 
-let muteCommand: 'mute' | 'tags-mute' = 'mute'
+**Edit 4.** In `plugin/hooks/register.tsx`, after the line `let host: Host | null = null`, add:
+```tsx
+  let muteCommand: 'mute' | 'tags-mute' = 'mute'
+```
 
-async function registerMute($: EngineInterface): Promise<'mute' | 'tags-mute'> {
-  const description = 'Mute or unmute Producer Tags'
-  try {
-    await $.command.register({ name: 'mute', description, immediate: true })
-    return 'mute'
-  } catch {
-    await $.command.register({ name: 'tags-mute', description, immediate: true })
-    return 'tags-mute'
-  }
-}
+**Edit 5.** In `plugin/hooks/register.tsx`, after the line `await loadFromStore(engine)`, add:
+```tsx
+      await recoverStage(engine)
+      muteCommand = await registerMute(engine)
+```
 
-/** Runs tag work in its own dispatch once the current one resolves (spec §3). */
-function schedule($: EngineInterface, pick: (settings: Settings) => Hit | null, toolUseId: string | null = null): void {
-  $.clock.after(0, () =>
-    act($, 'trigger', async () => {
-      const { settings } = await ensureLoaded($)
-      const hit = pick(settings)
-      if (hit !== null) await fire($, hit, toolUseId)
-    }),
-  )
-}
-
-async function muteAnswer($: EngineInterface): Promise<{ text: string }> {
-  try {
-    const settings = await toggleMute($)
-    return { text: settings.muted ? 'Tags muted.' : 'Tags unmuted.' }
-  } catch (error) {
-    logError($, 'mute', error)
-    return { text: 'Producer Tags hit an error.' }
-  }
-}
-
-export const register: Register = on => {
-  on('session.start', async ($, e, next) => {
-    try {
-      await loadFromStore($)
-      await recoverStage($)
-      muteCommand = await registerMute($)
-    } catch (error) {
-      logError($, 'session.start', error)
-    }
-    return next(e)
-  })
-
+**Edit 6.** In `plugin/hooks/register.tsx`, directly above the file's last line (`}`), add:
+```tsx
   on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
     const ran = await next(e)
     if (next.origin.plugin === 'engine') {
       const input = { command: e.command, run_in_background: e.run_in_background, isAborted: next.signal.aborted }
-      schedule($, settings => pickBashHit(settings, bashFacts(input, ran)), e.tool_use_id)
+      schedule(host ?? hostOf($), settings => pickBashHit(settings, bashFacts(input, ran)), e.tool_use_id)
     }
     return ran
   }).catch(($, e, next) => next(e))
 
   on('classic.PostModelSwitch', ($, e, next) => {
-    schedule($, settings => hitFor(settings, modelTrigger(e)))
+    schedule(host ?? hostOf($), settings => hitFor(settings, modelTrigger(e)))
     return next(e)
   })
   on('classic.SessionStart', ($, e, next) => {
-    schedule($, settings => hitFor(settings, sessionOpenTrigger(e.source)))
+    schedule(host ?? hostOf($), settings => hitFor(settings, sessionOpenTrigger(e.source)))
     return next(e)
   })
   on('classic.Stop', ($, e, next) => {
-    schedule($, settings => hitFor(settings, turnDoneTrigger(e.stop_hook_active === true)))
+    schedule(host ?? hostOf($), settings => hitFor(settings, turnDoneTrigger(e.stop_hook_active === true)))
     return next(e)
   })
 
-  // The outro is launched, not awaited: session.end has one short budget for every hook (spec §6.3).
+  // The outro is launched, not awaited: session.end has one short budget for every hook (spec
+  // §6.3). It binds this hook's own `$`, so the launch belongs to the session.end dispatch.
   on('session.end', ($, e, next) => {
-    act($, 'session.end', async () => {
-      const { settings } = await ensureLoaded($)
-      const hit = hitFor(settings, sessionCloseTrigger(e.reason))
-      if (hit !== null) await fireDetached($, hit)
+    const engine = hostOf($)
+    act(engine, 'session.end', async () => {
+      const hit = hitFor((await ensureLoaded(engine)).settings, sessionCloseTrigger(e.reason))
+      if (hit !== null) await fireDetached(engine, hit)
     })
     return next(e)
   })
 
-  on('command.run', { command: 'mute' }, async ($, e, next) => (muteCommand === 'mute' ? muteAnswer($) : next(e)))
-  on('command.run', { command: 'tags-mute' }, async $ => muteAnswer($))
-}
+  on('command.run', { command: 'mute' }, async ($, e, next) => (muteCommand === 'mute' ? muteAnswer(host ?? hostOf($)) : next(e)))
+  on('command.run', { command: 'tags-mute' }, async $ => muteAnswer(host ?? hostOf($)))
 ```
+
+Check the outline: `grep -n "^  on('" plugin/hooks/register.tsx` lists, in order, `session.start`, `tool.call`, `classic.PostModelSwitch`, `classic.SessionStart`, `classic.Stop`, `session.end`, `command.run` (`mute`), `command.run` (`tags-mute`).
 
 - [ ] **Step 6: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `tests/pipeline.test.ts` all pass, and earlier files still pass.
+Expected: `tests/stage.test.ts` and `tests/pipeline.test.ts` all pass, and earlier files still pass (`86 pass` in total).
 
 How to read the common failures:
 - **"hook skipped … no implementation for X":** `world()` is missing a fake for noun X. Add it beside the others in `world.tsx`.
@@ -3993,15 +4498,26 @@ How to read the common failures:
 Run: `npx tsc -p . && claude plugin validate plugin`
 Expected:
 - `validate` lists `tool.call{tool=Bash}` under "gating hook with .catch".
-- It lists `command.run{command=mute}` as a gate, because that hook reads `next`.
+- It lists `command.run{command=mute}` and `command.run{command=tags-mute}` as gates (the commands are registered through the Host, so the scan does not count them as the module's own).
 - Validation passes.
 
 ```bash
-git add plugin/hooks/stage.ts plugin/hooks/pipeline.ts plugin/hooks/register.tsx plugin/tests/pipeline.test.ts
+git add plugin/hooks/stage.ts plugin/hooks/pipeline.ts plugin/hooks/register.tsx plugin/tests/stage.test.ts plugin/tests/pipeline.test.ts
 git commit -m "feat: fire tags from Bash, model switch, session and stop events
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```
+
+- [ ] **Step 8: Live smoke test (5 minutes; the user drives the terminal)**
+
+The test kit cannot show that a binding made in `session.start` still plays seconds later from a real `tool.call`, so check it once now, before building UI on top.
+
+1. Ask the user to run `claude --plugin-dir ./plugin` in a scratch git repo.
+2. Ask Claude to make a commit. Expected: the `git.commit` tag plays within about a second of the tool call finishing.
+3. Type `/mute` while a tag plays (ask for a second commit after 30 s). Expected: the answer is `Tags muted.` and the sound stops. `/mute` again answers `Tags unmuted.`
+4. Run `/exit`. Expected: the outro plays (best-effort; record it if not).
+
+If step 2 is silent, stop and debug with superpowers:systematic-debugging before Task 9: start with the debug log (`claude --debug`, lines starting `producer-tags:`). If the scheduled work fails with the stored binding, pass `hostOf($)` from the `tool.call` hook instead of `host ?? hostOf($)`, and record that in the spec's §14.
 
 ---
 
@@ -4009,23 +4525,17 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `plugin/hooks/imports.ts`
-- Test: `plugin/tests/imports.test.ts` (the pure parts). The import flows that need `$` are tested through the pane in Task 12, which is the only caller.
+- Test: `plugin/tests/imports.test.ts` (the pure parts, and the flows through a fake Host). The pane is their only caller; Task 12 tests them again through it.
 
 **Interfaces:**
 - **Consumes:**
-  - `detectPlatform`
-  - `ensureLoaded`, `changeImports`, `changeSettings`
-  - `allowedExts`, `extOf`, `basename`, `slugify`, `parseWav`
-  - `decodeBase64`
+  - `Host`; `detectPlatform`; `ensureLoaded`, `changeImports`, `changeSettings`
+  - `allowedExts`, `extOf`, `basename`, `slugify`, `parseWav`; `decodeBase64`
   - `MAX_IMPORT_BYTES`, `TRIGGERS`, `FALLBACK_SOUND`
 - **Produces:**
   - `type ImportResult = { ok: true; sound: ImportedSound; warning: string | null } | { ok: false; error: string }`
-  - `cleanPastedPath(raw: string, os: OsName): string`, which trims, unquotes, and unescapes a pasted path
-  - `expandPath($, raw: string, platform: Platform): Promise<string>`, which applies `cleanPastedPath`, then `~`, then `wslpath -u` for `C:\` paths on WSL
-  - `soundsDir($, platform): Promise<{ dir: string; sep: '/' | '\\' }>`
-  - `importSound($, rawPath: string): Promise<ImportResult>`
-  - `deleteImport($, id: SoundId): Promise<void>`
-  - `resetSound(settings: Settings, id: SoundId): Settings`
+  - pure: `COPY_WARNING`, `cleanPastedPath(raw, os)`, `expandHome(path, home)`, `isWindowsPathOnWsl(os, path)`, `soundsDirOf(os, configDir, home)`, `importProblem(path, stat, ext, allowed)`, `copyCommand(os, source, dir, target)`, `deleteCommand(os, file)`, `stripExt(name)`, `resetSound(settings, id)`
+  - `expandPath(host, raw, platform)` (cleans, expands `~`, and runs `wslpath -u` for a `C:\` path on WSL), `importSound(host, rawPath): Promise<ImportResult>`, `deleteImport(host, id): Promise<boolean>`
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4033,8 +4543,22 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ```ts
 import { describe, expect, test } from 'claude-code/testing'
 
-import { cleanPastedPath, resetSound } from '../hooks/imports'
+import {
+  COPY_WARNING,
+  cleanPastedPath,
+  copyCommand,
+  deleteCommand,
+  deleteImport,
+  expandHome,
+  importProblem,
+  importSound,
+  isWindowsPathOnWsl,
+  resetSound,
+  soundsDirOf,
+} from '../hooks/imports'
 import { defaultSettings } from '../hooks/settings'
+import { fakeHost } from './fake-host'
+import { EMPTY_WAV } from './world'
 
 describe('cleanPastedPath', () => {
   test('drag-and-drop: surrounding quotes, escaped spaces and brackets, stray whitespace', () => {
@@ -4050,6 +4574,40 @@ describe('cleanPastedPath', () => {
   })
 })
 
+describe('where imports go and how they are checked', () => {
+  test('~ and WSL paths', () => {
+    expect(expandHome('~/Music/x.wav', '/home/dev')).toBe('/home/dev/Music/x.wav')
+    expect(expandHome('/a/~x.wav', '/home/dev')).toBe('/a/~x.wav')
+    expect(isWindowsPathOnWsl('wsl', 'C:\\m\\x.wav')).toBe(true)
+    expect(isWindowsPathOnWsl('linux', 'C:\\m\\x.wav')).toBe(false)
+  })
+  test('the sounds folder: CLAUDE_CONFIG_DIR, else ~/.claude', () => {
+    expect(soundsDirOf('mac', undefined, '/home/dev')).toEqual({ dir: '/home/dev/.claude/producer-tags/sounds', sep: '/' })
+    expect(soundsDirOf('linux', '/cfg', '/home/dev')).toEqual({ dir: '/cfg/producer-tags/sounds', sep: '/' })
+    expect(soundsDirOf('windows', undefined, 'C:\\Users\\dev')).toEqual({ dir: 'C:\\Users\\dev\\.claude\\producer-tags\\sounds', sep: '\\' })
+  })
+  test('problems, in order', () => {
+    const file = { kind: 'file', size: 10 }
+    expect(importProblem('', null, null, ['wav'])).toBe('Enter the path of an audio file.')
+    expect(importProblem('/a/x.wav', null, 'wav', ['wav'])).toBe('No file at /a/x.wav.')
+    expect(importProblem('/a', { kind: 'dir', size: 0 }, null, ['wav'])).toBe('No file at /a.')
+    expect(importProblem('/a/x.txt', file, null, ['wav', 'mp3'])).toBe('Use one of: wav, mp3.')
+    expect(importProblem('/a/x.wav', { kind: 'file', size: 5_000_000 }, 'wav', ['wav'])).toBe('Files must be 4 MB or smaller.')
+    expect(importProblem('/a/x.wav', file, 'wav', ['wav'])).toBeNull()
+  })
+  test('copy and delete pass every path in env or argv, never in a command string', () => {
+    expect(copyCommand('mac', '/a/x.wav', '/d', '/d/x.wav')).toEqual({
+      argv: ['sh', '-c', 'mkdir -p -- "$PT_DIR" && cp -- "$PT_SRC" "$PT_DST"'],
+      env: { PT_DIR: '/d', PT_SRC: '/a/x.wav', PT_DST: '/d/x.wav' },
+    })
+    const windows = copyCommand('windows', 'C:\\m\\[x].wav', 'C:\\d', 'C:\\d\\x.wav')
+    expect(windows.argv[4]).toContain('Copy-Item -LiteralPath $env:PT_SRC')
+    expect(windows.env.PT_SRC).toBe('C:\\m\\[x].wav')
+    expect(deleteCommand('linux', '/d/x.wav')).toEqual({ argv: ['rm', '-f', '--', '/d/x.wav'] })
+    expect(deleteCommand('windows', 'C:\\d\\x.wav').env).toEqual({ PT_DST: 'C:\\d\\x.wav' })
+  })
+})
+
 describe('resetSound', () => {
   test('points triggers and custom triggers using a deleted sound back at their defaults', () => {
     const s = defaultSettings()
@@ -4061,22 +4619,46 @@ describe('resetSound', () => {
     expect(reset.triggers['git.commit']).toEqual(s.triggers['git.commit'])
   })
 })
+
+describe('importSound and deleteImport through a Host', () => {
+  const mac = (argv: readonly string[]) => (argv[0] === 'uname' ? { stdout: 'Darwin\n' } : {})
+  test('copies under ~/.claude with every path in env, records the import, and deleting removes the copy', async () => {
+    const host = fakeHost({ run: mac, files: { '/home/dev/Music/My Tag.wav': { base64: EMPTY_WAV } } })
+    const result = await importSound(host, "'~/Music/My Tag.wav'")
+    expect(result).toMatchObject({ ok: true, warning: null, sound: { id: 'user:my-tag', file: '/home/dev/.claude/producer-tags/sounds/my-tag.wav', isCopy: true } })
+    expect(host.runs.find(r => r.argv[0] === 'sh')?.env).toEqual({
+      PT_DIR: '/home/dev/.claude/producer-tags/sounds',
+      PT_SRC: '/home/dev/Music/My Tag.wav',
+      PT_DST: '/home/dev/.claude/producer-tags/sounds/my-tag.wav',
+    })
+    expect(host.stored.get('imports')).toHaveLength(1)
+    expect(await deleteImport(host, 'user:my-tag')).toBe(true)
+    expect(host.runs.at(-1)?.argv).toEqual(['rm', '-f', '--', '/home/dev/.claude/producer-tags/sounds/my-tag.wav'])
+    expect(host.stored.get('imports')).toEqual([])
+  })
+  test('a failed copy keeps the original with a warning; a missing file is an inline error', async () => {
+    const host = fakeHost({ run: argv => (argv[0] === 'uname' ? { stdout: 'Darwin\n' } : { exitCode: argv[0] === 'sh' ? 1 : 0 }), files: { '/a/x.wav': { base64: EMPTY_WAV } } })
+    expect(await importSound(host, '/a/x.wav')).toMatchObject({ ok: true, warning: COPY_WARNING, sound: { file: '/a/x.wav', isCopy: false } })
+    expect(await importSound(host, '/a/none.wav')).toEqual({ ok: false, error: 'No file at /a/none.wav.' })
+  })
+})
 ```
+
+The Windows copy is checked on `copyCommand` rather than through the engine: the test kit resolves a `C:\…` path against the plugin folder on a Linux host, so `$.fs.stat` never finds it there.
 
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL. `tests/imports.test.ts` cannot resolve `../hooks/imports`.
+Expected: FAIL. `tests/imports.test.ts` reports `(fail) the file did not load`.
 
 - [ ] **Step 3: Implement `imports.ts`**
 
 `plugin/hooks/imports.ts`:
 ```ts
-import type { EngineInterface } from 'claude-code'
-
-import type { ImportedSound, OsName, Platform, Settings, SoundId } from '../types'
+import type { AudioExt, ImportedSound, OsName, Platform, Settings, SoundId } from '../types'
 import { decodeBase64 } from './codec'
 import { FALLBACK_SOUND, MAX_IMPORT_BYTES, TRIGGERS } from './constants'
+import type { Host } from './host'
 import { allowedExts, basename, extOf, parseWav, slugify } from './library'
 import { detectPlatform } from './platform'
 import { changeImports, changeSettings, ensureLoaded } from './settings'
@@ -4084,6 +4666,8 @@ import { changeImports, changeSettings, ensureLoaded } from './settings'
 export type ImportResult =
   | { ok: true; sound: ImportedSound; warning: string | null }
   | { ok: false; error: string }
+
+export const COPY_WARNING = 'Could not copy the file, so it is used from where it is; moving it will break this tag.'
 
 /** What a terminal pastes for a dropped file: maybe quoted, maybe with backslash-escaped spaces. */
 export function cleanPastedPath(raw: string, os: OsName): string {
@@ -4094,77 +4678,55 @@ export function cleanPastedPath(raw: string, os: OsName): string {
   return path
 }
 
-async function home($: EngineInterface, platform: Platform): Promise<string> {
-  return (platform.os === 'windows' ? await $.env.get('USERPROFILE') : await $.env.get('HOME')) ?? '.'
+/** A leading `~` as the home directory. */
+export function expandHome(path: string, home: string): string {
+  return path === '~' || path.startsWith('~/') || path.startsWith('~\\') ? `${home}${path.slice(1)}` : path
 }
 
-export async function expandPath($: EngineInterface, raw: string, platform: Platform): Promise<string> {
-  let path = cleanPastedPath(raw, platform.os)
-  if (path === '~' || path.startsWith('~/') || path.startsWith('~\\')) path = `${await home($, platform)}${path.slice(1)}`
-  if (platform.os === 'wsl' && /^[A-Za-z]:[\\/]/.test(path)) {
-    const converted = await $.process.run(['wslpath', '-u', path]).catch(() => null)
-    if (converted?.exitCode === 0) path = converted.stdout.trim()
-  }
-  return path
+/** A `C:\…` path typed on WSL, which `wslpath -u` turns into `/mnt/c/…`. */
+export function isWindowsPathOnWsl(os: OsName, path: string): boolean {
+  return os === 'wsl' && /^[A-Za-z]:[\\/]/.test(path)
 }
 
-export async function soundsDir($: EngineInterface, platform: Platform): Promise<{ dir: string; sep: '/' | '\\' }> {
-  const sep = platform.os === 'windows' ? '\\' : '/'
-  const config = (await $.env.get('CLAUDE_CONFIG_DIR')) ?? `${await home($, platform)}${sep}.claude`
+export function soundsDirOf(os: OsName, configDir: string | undefined, home: string): { dir: string; sep: '/' | '\\' } {
+  const sep = os === 'windows' ? '\\' : '/'
+  const config = configDir ?? `${home}${sep}.claude`
   return { dir: `${config}${sep}producer-tags${sep}sounds`, sep }
 }
 
-/** Copies with every path in env (never in the command text). */
-async function copyInto($: EngineInterface, platform: Platform, source: string, dir: string, target: string): Promise<boolean> {
+/** Why the file cannot be imported, or null when it can (spec §7.2, step 2). */
+export function importProblem(
+  path: string,
+  stat: { kind: string; size: number } | null,
+  ext: AudioExt | null,
+  allowed: readonly AudioExt[],
+): string | null {
+  if (path === '') return 'Enter the path of an audio file.'
+  if (stat === null || stat.kind !== 'file') return `No file at ${path}.`
+  if (ext === null || !allowed.includes(ext)) return `Use one of: ${allowed.join(', ')}.`
+  if (stat.size > MAX_IMPORT_BYTES) return 'Files must be 4 MB or smaller.'
+  return null
+}
+
+/** The copy, with every path in env (never in the command text). */
+export function copyCommand(os: OsName, source: string, dir: string, target: string): { argv: string[]; env: Record<string, string> } {
   const env = { PT_DIR: dir, PT_SRC: source, PT_DST: target }
   const argv =
-    platform.os === 'windows'
+    os === 'windows'
       ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', 'New-Item -ItemType Directory -Force -Path $env:PT_DIR | Out-Null; Copy-Item -LiteralPath $env:PT_SRC -Destination $env:PT_DST']
       : ['sh', '-c', 'mkdir -p -- "$PT_DIR" && cp -- "$PT_SRC" "$PT_DST"']
-  const result = await $.process.run(argv, { env }).catch(() => null)
-  return result?.exitCode === 0
+  return { argv, env }
 }
 
-async function namesOnDisk($: EngineInterface, dir: string): Promise<string[]> {
-  const entries = await $.fs.list(dir).catch(() => [])
-  return entries.map(entry => entry.name.replace(/\.[^.]*$/, ''))
+/** Removing a copied import: argv with no shell, or PowerShell with the path in env. */
+export function deleteCommand(os: OsName, file: string): { argv: string[]; env?: Record<string, string> } {
+  return os === 'windows'
+    ? { argv: ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', 'Remove-Item -LiteralPath $env:PT_DST -Force'], env: { PT_DST: file } }
+    : { argv: ['rm', '-f', '--', file] }
 }
 
-export async function importSound($: EngineInterface, rawPath: string): Promise<ImportResult> {
-  const platform = await detectPlatform($)
-  const path = await expandPath($, rawPath, platform)
-  if (path === '') return { ok: false, error: 'Enter the path of an audio file.' }
-  const stat = await $.fs.stat(path).catch(() => null)
-  if (stat === null || stat.kind !== 'file') return { ok: false, error: `No file at ${path}.` }
-  const ext = extOf(path)
-  const allowed = allowedExts(platform.os, platform.player)
-  if (ext === null || !allowed.includes(ext)) return { ok: false, error: `Use one of: ${allowed.join(', ')}.` }
-  if (stat.size > MAX_IMPORT_BYTES) return { ok: false, error: 'Files must be 4 MB or smaller.' }
-
-  const { imports } = await ensureLoaded($)
-  const { dir, sep } = await soundsDir($, platform)
-  const name = basename(path)
-  const taken = new Set([...imports.map(sound => sound.id.slice('user:'.length)), ...(await namesOnDisk($, dir))])
-  const slug = slugify(name, taken)
-  const target = `${dir}${sep}${slug}.${ext}`
-  const isCopy = await copyInto($, platform, path, dir, target)
-  const file = isCopy ? target : path
-
-  let durationMs: number | null = null
-  let peaks: number[] | null = null
-  if (ext === 'wav') {
-    const bytes = await $.fs.read(file, { as: 'bytes' }).catch(() => $.fs.read(path, { as: 'bytes' }).catch(() => null))
-    const info = bytes === null ? null : parseWav(decodeBase64(bytes.base64))
-    durationMs = info?.durationMs ?? null
-    peaks = info?.peaks ?? null
-  }
-  const sound: ImportedSound = { id: `user:${slug}`, name: name.replace(/\.[^.]*$/, ''), file, ext, bytes: stat.size, durationMs, peaks, isCopy }
-  await changeImports($, list => [...list, sound])
-  return {
-    ok: true,
-    sound,
-    warning: isCopy ? null : 'Could not copy the file, so it is used from where it is; moving it will break this tag.',
-  }
+export function stripExt(name: string): string {
+  return name.replace(/\.[^.]*$/, '')
 }
 
 export function resetSound(settings: Settings, id: SoundId): Settings {
@@ -4177,32 +4739,80 @@ export function resetSound(settings: Settings, id: SoundId): Settings {
   }
 }
 
-export async function deleteImport($: EngineInterface, id: SoundId): Promise<void> {
-  const { imports } = await ensureLoaded($)
-  const sound = imports.find(s => s.id === id)
-  if (sound === undefined) return
-  if (sound.isCopy) {
-    const platform = await detectPlatform($)
-    const argv =
-      platform.os === 'windows'
-        ? ['powershell.exe', '-NoProfile', '-NonInteractive', '-Command', 'Remove-Item -LiteralPath $env:PT_DST -Force']
-        : ['rm', '-f', '--', sound.file]
-    await $.process.run(argv, platform.os === 'windows' ? { env: { PT_DST: sound.file } } : undefined).catch(() => null)
+async function home(host: Host, platform: Platform): Promise<string> {
+  return (platform.os === 'windows' ? await host.env.userProfile() : await host.env.home()) ?? '.'
+}
+
+/** A pasted path cleaned, `~` expanded, and on WSL a `C:\` path converted with `wslpath -u`. */
+export async function expandPath(host: Host, raw: string, platform: Platform): Promise<string> {
+  const path = expandHome(cleanPastedPath(raw, platform.os), await home(host, platform))
+  if (!isWindowsPathOnWsl(platform.os, path)) return path
+  const converted = await host.run(['wslpath', '-u', path]).catch(() => null)
+  return converted?.exitCode === 0 ? converted.stdout.trim() : path
+}
+
+export async function importSound(host: Host, rawPath: string): Promise<ImportResult> {
+  const platform = await detectPlatform(host)
+  const path = await expandPath(host, rawPath, platform)
+  const stat = path === '' ? null : await host.stat(path).catch(() => null)
+  const ext = extOf(path)
+  const problem = importProblem(path, stat, ext, allowedExts(platform.os, platform.player))
+  if (problem !== null || stat === null || ext === null) return { ok: false, error: problem ?? `No file at ${path}.` }
+
+  const { imports } = await ensureLoaded(host)
+  const { dir, sep } = soundsDirOf(platform.os, await host.env.configDir(), await home(host, platform))
+  const onDisk = (await host.list(dir).catch(() => [])).map(entry => stripExt(entry.name))
+  const name = basename(path)
+  const slug = slugify(name, new Set([...imports.map(sound => sound.id.slice('user:'.length)), ...onDisk]))
+  const target = `${dir}${sep}${slug}.${ext}`
+  const copy = copyCommand(platform.os, path, dir, target)
+  const isCopy = (await host.run(copy.argv, { env: copy.env }).catch(() => null))?.exitCode === 0
+  const file = isCopy ? target : path
+
+  let info: { durationMs: number; peaks: number[] } | null = null
+  if (ext === 'wav') {
+    const bytes = await host.readBytes(file).catch(() => host.readBytes(path).catch(() => null))
+    info = bytes === null ? null : parseWav(decodeBase64(bytes.base64))
   }
-  await changeImports($, list => list.filter(s => s.id !== id))
-  await changeSettings($, settings => resetSound(settings, id))
+  const sound: ImportedSound = {
+    id: `user:${slug}`,
+    name: stripExt(name),
+    file,
+    ext,
+    bytes: stat.size,
+    durationMs: info?.durationMs ?? null,
+    peaks: info?.peaks ?? null,
+    isCopy,
+  }
+  await changeImports(host, list => [...list, sound])
+  return { ok: true, sound, warning: isCopy ? null : COPY_WARNING }
+}
+
+/** Removes the import, its copy on disk (never the original), and every use of it (spec §7.2). */
+export async function deleteImport(host: Host, id: SoundId): Promise<boolean> {
+  const { imports } = await ensureLoaded(host)
+  const sound = imports.find(s => s.id === id)
+  if (sound === undefined) return false
+  if (sound.isCopy) {
+    const remove = deleteCommand((await detectPlatform(host)).os, sound.file)
+    await host.run(remove.argv, remove.env === undefined ? undefined : { env: remove.env }).catch(() => null)
+  }
+  await changeImports(host, list => list.filter(s => s.id !== id))
+  await changeSettings(host, settings => resetSound(settings, id))
+  return true
 }
 ```
 
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `tests/imports.test.ts` all pass.
+Expected: `tests/imports.test.ts` all pass (`96 pass` in total).
 
-- [ ] **Step 5: Type-check and commit**
+- [ ] **Step 5: Type-check, validate, commit**
 
 ```bash
-npx tsc -p . && git add plugin/hooks/imports.ts plugin/tests/imports.test.ts
+npx tsc -p . && claude plugin validate plugin
+git add plugin/hooks/imports.ts plugin/tests/imports.test.ts
 git commit -m "feat: import and delete user sounds safely across platforms
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -4213,26 +4823,18 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ### Task 10: Now-playing band, animation, and mode label
 
 **Files:**
-- Create: `plugin/hooks/ui/visual.ts`, `plugin/hooks/ui/animate.ts`, `plugin/hooks/ui/band.tsx`, `plugin/hooks/ui/mode.tsx`
-- Modify: `plugin/hooks/pipeline.ts` (start the animation when a clip starts), `plugin/hooks/register.tsx` (register the band and the mode label)
+- Create: `plugin/hooks/ui/visual.ts` (pure), `plugin/hooks/ui/animate.ts`, `plugin/hooks/ui/band.tsx` (a plain view), `plugin/hooks/ui/mode.ts` (pure)
+- Modify: `plugin/hooks/pipeline.ts` (start the animation when a clip starts), `plugin/hooks/register.tsx` (imports, the band and mode render hooks)
 - Test: `plugin/tests/visual.test.ts`, `plugin/tests/band.test.tsx`
 
+The render hooks stay in `register.tsx`: they read the atoms declared there with their own `$` (a read made while drawing subscribes the drawing), then hand plain data to the views. The animation loop writes `bandFrame` and `captionWord` through the Host 10 times a second, so only the drawings that read them redraw (spec §8.3).
+
 **Interfaces:**
-- **Consumes:**
-  - `isOnStage` (Task 8, `stage.ts`)
-  - `act`, `logError`
-  - the atoms
-  - `FRAME_MS`
-  - from `tests/world.tsx`: `world`, `bash`, `committed`, `BAND`
-- **Produces from `visual.ts`:**
-  - `BAR_GLYPHS`
-  - `progressOf(np, now): number`
-  - `levelsAt(peaks, progress, count, seed): number[]`, where each level is 0–7
-  - `barsText(levels): string`
-  - `waveformLevels(peaks, width): number[]`
-  - `captionWordAt(np, now): number`, where -1 means no highlight
-- **Produces from `animate.ts`:** `EQ_COLUMNS = 10`, `startAnimation($, token)`, `stopAnimation()`.
-- **Produces from `band.tsx` / `mode.tsx`:** `registerBand(on)` and `registerMode(on)`. The band's row Box key is `pt-band`.
+- **Consumes:** `isOnStage`; `NO_WORD`; `FRAME_MS`; `Host`, `act`; from the tests: `world`, `bash`, `committed`, `BAND`, `START`.
+- **Produces from `visual.ts` (pure):** `BAR_GLYPHS`, `EQ_COLUMNS = 10`, `progressOf(np, now)`, `levelsAt(peaks, progress, count, seed)` (each level 0–7), `barsText(levels)`, `waveformLevels(peaks, width)`, `captionWordAt(np, now)` (-1 means no highlight).
+- **Produces from `animate.ts`:** `startAnimation(host, token)`, `stopAnimation()`.
+- **Produces from `band.tsx`:** `type BandKit`, `bandView(kit, np, now, frame, word, engine)`. The band's row Box key is `pt-band`.
+- **Produces from `mode.ts`:** `modesWith(modes, settings)`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -4278,7 +4880,7 @@ describe('visual', () => {
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
-import { BAND, bash, committed, world } from './world'
+import { BAND, START, bash, committed, world } from './world'
 
 const COMMIT = CATALOG.find(c => c.id === 'pt:anthropic-trust')!
 const escape = (text: string) => text.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
@@ -4288,7 +4890,7 @@ const FIRST_WORD = new RegExp(escape(COMMIT.caption.split(/\s+/)[0]!))
 describe('now-playing band', () => {
   test('nothing playing: only the engine draws', async ($, on) => {
     world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal' })
     expect(await ui.find({ text: /riffing on/ })).toBeUndefined()
     expect(await ui.find({ text: 'ENGINE' })).toBeDefined()
@@ -4297,7 +4899,7 @@ describe('now-playing band', () => {
   for (const surface of ['terminal', 'desktop'] as const) {
     test(`a playing tag shows caption, riff and equalizer bars (${surface}), then leaves after the tail`, { timeoutMs: 20_000 }, async ($, on) => {
       const w = world(on, { audioMs: COMMIT.durationMs })
-      await $.session.start({} as never)
+      await $.session.start(START)
       await bash($, w, 'git commit -m x', committed())
       const ui = await $.ui.mount({ ...BAND, surface })
       expect(await ui.find({ text: RIFF })).toBeDefined()
@@ -4311,7 +4913,7 @@ describe('now-playing band', () => {
 
   test('the frame counter and caption highlight move forward while the clip plays', { timeoutMs: 20_000 }, async ($, on) => {
     const w = world(on, { audioMs: COMMIT.durationMs })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     await $.ui.mount({ ...BAND, surface: 'terminal' })
     await w.clock.advance(100)
@@ -4323,7 +4925,7 @@ describe('now-playing band', () => {
 
   test('an entry past its deadline is not shown, even if its end was never reported', { timeoutMs: 20_000 }, async ($, on) => {
     const w = world(on, { audioMs: 600_000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     await w.clock.advance(COMMIT.durationMs + 1001)
     expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ text: /riffing on/ })).toBeUndefined()
@@ -4331,14 +4933,14 @@ describe('now-playing band', () => {
 
   test('hidden when Studio → band is off', async ($, on) => {
     const w = world(on, { audioMs: 3000, store: { settings: { studio: { band: false, badges: true } } } })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     expect(await (await $.ui.mount({ ...BAND, surface: 'terminal' })).find({ text: /riffing on/ })).toBeUndefined()
   })
 
   test('a survey wins over the band', async ($, on) => {
     const w = world(on, { audioMs: 3000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     const ui = await $.ui.mount({ ...BAND, surface: 'terminal', props: { ...BAND.props, hasSurvey: true } })
     expect(await ui.find({ text: /riffing on/ })).toBeUndefined()
@@ -4348,7 +4950,7 @@ describe('now-playing band', () => {
 describe('mode label', () => {
   test('adds ♫ tags, or ♫ muted', async ($, on) => {
     world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     const mode = { plugin: 'producer-tags', component: 'SessionMode' as const, props: { modes: ['plan'] } }
     expect((await (await $.ui.mount({ ...mode, surface: 'terminal' })).find({ type: 'Text' }))?.text).toBe('plan | ♫ tags')
     await $.command.run({ command: 'mute', args: '' } as never)
@@ -4360,15 +4962,18 @@ describe('mode label', () => {
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL. `visual.test.ts` cannot resolve `../hooks/ui/visual`, and the band tests find no `riffing on` text.
+Expected: FAIL. `visual.test.ts` reports `(fail) the file did not load`, and the band tests find no `riffing on` text.
 
-- [ ] **Step 3: Implement `visual.ts`**
+- [ ] **Step 3: Implement `visual.ts` and `animate.ts`**
 
 `plugin/hooks/ui/visual.ts`:
 ```ts
 import type { NowPlaying } from '../../types'
 
 export const BAR_GLYPHS = '▁▂▃▄▅▆▇█'
+
+/** How many bars the band's equalizer draws. */
+export const EQ_COLUMNS = 10
 
 export function progressOf(np: NowPlaying, now: number): number {
   if (np.startedAt === null || np.durationMs === null || np.durationMs <= 0) return 0
@@ -4414,20 +5019,16 @@ export function captionWordAt(np: NowPlaying, now: number): number {
 }
 ```
 
-- [ ] **Step 4: Implement `animate.ts`**
-
 `plugin/hooks/ui/animate.ts`:
 ```ts
-import { read, update } from 'claude-code'
-import type { EngineInterface, Timer } from 'claude-code'
+import type { Timer } from 'claude-code'
 
 import { FRAME_MS } from '../constants'
+import type { Host } from '../host'
 import { act } from '../notify'
 import { isOnStage } from '../stage'
-import { bandFrameAtom, captionWordAtom, nowPlayingAtom } from '../state'
+import { NO_WORD } from '../state'
 import { captionWordAt } from './visual'
-
-export const EQ_COLUMNS = 10
 
 let running: { token: string; timer: Timer } | null = null
 
@@ -4437,41 +5038,92 @@ export function stopAnimation(): void {
 }
 
 /** Redraws the band (and a previewing pane row) from state 10 times a second until the clip leaves the stage (spec §8.3). */
-export function startAnimation($: EngineInterface, token: string): void {
+export function startAnimation(host: Host, token: string): void {
   stopAnimation()
-  act($, 'band frame', () => update($, captionWordAtom, () => -1))
-  running = { token, timer: $.clock.every(FRAME_MS, () => act($, 'band frame', () => frame($, token))) }
+  act(host, 'band frame', () => host.state.captionWord.update(() => NO_WORD))
+  running = { token, timer: host.every(FRAME_MS, () => act(host, 'band frame', () => frame(host, token))) }
 }
 
-async function frame($: EngineInterface, token: string): Promise<void> {
-  const np = await read($, nowPlayingAtom)
-  const now = await $.clock.now()
+async function frame(host: Host, token: string): Promise<void> {
+  const np = await host.state.nowPlaying.read()
+  const now = await host.now()
   if (np === null || np.token !== token || !isOnStage(np, now)) {
     if (running?.token !== token) return
     stopAnimation()
-    await update($, bandFrameAtom, n => n + 1) // one last redraw, so a band past its deadline hides
+    await host.state.bandFrame.update(n => n + 1) // one last redraw, so a band past its deadline hides
     return
   }
-  await update($, bandFrameAtom, n => n + 1)
+  await host.state.bandFrame.update(n => n + 1)
   const word = captionWordAt(np, now)
-  if (word !== (await read($, captionWordAtom))) await update($, captionWordAtom, () => word)
+  if (word !== (await host.state.captionWord.read())) await host.state.captionWord.update(() => word)
 }
 ```
 
-- [ ] **Step 5: Implement `band.tsx` and `mode.tsx`**
+**Edit 1.** In `plugin/hooks/pipeline.ts`, after the line `import type { Hit } from './triggers'`, add:
+```ts
+import { startAnimation } from './ui/animate'
+```
+
+**Edit 2.** In `plugin/hooks/pipeline.ts`, after the line `await setTag(host, toolUseId, sound.id)`, add:
+```ts
+  startAnimation(host, token)
+```
+
+- [ ] **Step 4: Implement the band and mode views**
 
 `plugin/hooks/ui/band.tsx`:
 ```tsx
-import { read } from 'claude-code'
-import type { On } from 'claude-code'
+import type { Elements } from 'claude-code'
 
-import { logError } from '../notify'
-import { isOnStage } from '../stage'
-import { bandFrameAtom, captionWordAtom, nowPlayingAtom, settingsAtom } from '../state'
-import { EQ_COLUMNS } from './animate'
-import { barsText, levelsAt, progressOf } from './visual'
+import type { NowPlaying } from '../../types'
+import { EQ_COLUMNS, barsText, levelsAt, progressOf } from './visual'
 
-export function registerBand(on: On): void {
+export type BandKit = Pick<Elements['terminal'], 'Box' | 'Text'>
+
+/** The now-playing line above the engine's own band content (spec §8.3). */
+export function bandView(kit: BandKit, np: NowPlaying, now: number, frame: number, word: number, engine: JSX.Element): JSX.Element {
+  const { Box, Text } = kit
+  const bars = barsText(levelsAt(np.peaks, progressOf(np, now), EQ_COLUMNS, frame))
+  const words = np.caption.split(/\s+/).filter(Boolean)
+  const lit = word < 0 ? 0 : word + 1
+  return (
+    <Box flexDirection="column">
+      <Box key="pt-band" gap={1}>
+        <Text color="claude">♫ {bars}</Text>
+        <Text>
+          "<Text bold>{words.slice(0, lit).join(' ')}</Text>
+          {lit > 0 && lit < words.length ? ' ' : ''}
+          <Text dimColor={word >= 0}>{words.slice(lit).join(' ')}</Text>"
+        </Text>
+        <Text dimColor>— riffing on {np.riff}</Text>
+      </Box>
+      {engine}
+    </Box>
+  )
+}
+```
+
+`plugin/hooks/ui/mode.ts`:
+```ts
+import type { Settings } from '../../types'
+
+/** The session's mode labels with ours added: `♫ tags`, or `♫ muted` (spec §8.5). */
+export function modesWith(modes: readonly string[], settings: Settings): string[] {
+  return [...modes, settings.muted ? '♫ muted' : '♫ tags']
+}
+```
+
+- [ ] **Step 5: Add the render hooks to `register.tsx`**
+
+**Edit 1.** In `plugin/hooks/register.tsx`, add these imports (keep the relative imports sorted by path):
+```tsx
+import { isOnStage } from './stage'
+import { bandView } from './ui/band'
+import { modesWith } from './ui/mode'
+```
+
+**Edit 2.** In `plugin/hooks/register.tsx`, directly above the file's last line (`}`), add:
+```tsx
   on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
     try {
       const np = await read($, nowPlayingAtom)
@@ -4480,80 +5132,35 @@ export function registerBand(on: On): void {
       const word = await read($, captionWordAtom)
       const now = await $.clock.now()
       if (np === null || !isOnStage(np, now) || settings?.studio.band === false || e.props.hasSurvey) return next(e)
-
       const { Box, Text } = $.ui.resolve(e)
-      const bars = barsText(levelsAt(np.peaks, progressOf(np, now), EQ_COLUMNS, frame))
-      const words = np.caption.split(/\s+/).filter(Boolean)
-      const lit = word < 0 ? 0 : word + 1
-      const engine = await next(e)
-      return (
-        <Box flexDirection="column">
-          <Box key="pt-band" gap={1}>
-            <Text color="claude">♫ {bars}</Text>
-            <Text>
-              "<Text bold>{words.slice(0, lit).join(' ')}</Text>
-              {lit > 0 && lit < words.length ? ' ' : ''}
-              <Text dimColor={word >= 0}>{words.slice(lit).join(' ')}</Text>"
-            </Text>
-            <Text dimColor>— riffing on {np.riff}</Text>
-          </Box>
-          {engine}
-        </Box>
-      )
+      return bandView({ Box, Text }, np, now, frame, word, await next(e))
     } catch (error) {
-      logError($, 'band', error)
+      logError(host ?? hostOf($), 'band', error)
       return next(e)
     }
   })
-}
-```
 
-`plugin/hooks/ui/mode.tsx`:
-```tsx
-import { read } from 'claude-code'
-import type { On } from 'claude-code'
-
-import { settingsAtom } from '../state'
-
-export function registerMode(on: On): void {
   on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
     const settings = await read($, settingsAtom).catch(() => null)
     if (settings === null) return next(e)
-    return next({ ...e, props: { ...e.props, modes: [...e.props.modes, settings.muted ? '♫ muted' : '♫ tags'] } })
+    return next({ ...e, props: { ...e.props, modes: modesWith(e.props.modes, settings) } })
   })
-}
 ```
 
-- [ ] **Step 6: Wire them in**
+Check the outline: `grep -n "^  on('" plugin/hooks/register.tsx` now ends with `ui.render` (`AbovePrompt`) and `ui.render` (`SessionMode`).
 
-In `plugin/hooks/pipeline.ts`, add `import { startAnimation } from './ui/animate'`. In `fire`, directly after `await setTag($, toolUseId, sound.id)`, add:
-```ts
-  startAnimation($, token)
-```
-
-In `plugin/hooks/register.tsx`, add:
-```tsx
-import { registerBand } from './ui/band'
-import { registerMode } from './ui/mode'
-```
-At the top of the `register` body, add:
-```tsx
-  registerBand(on)
-  registerMode(on)
-```
-
-- [ ] **Step 7: Run the tests to see them pass**
+- [ ] **Step 6: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `visual` and `band` pass, along with all earlier files.
+Expected: `visual` and `band` pass, along with all earlier files (`107 pass` in total).
 
 If `ui.find({ text: RIFF })` fails because `.text` of nested `Text` elements is reported per element, find the row instead and match its text: `(await ui.find({ type: 'Box', key: 'pt-band' }))?.text` with `toMatch(RIFF)`.
 
-- [ ] **Step 8: Type-check, validate, commit**
+- [ ] **Step 7: Type-check, validate, commit**
 
 ```bash
 npx tsc -p . && claude plugin validate plugin
-git add plugin/hooks/ui plugin/hooks/pipeline.ts plugin/hooks/register.tsx plugin/tests/visual.test.ts plugin/tests/band.test.tsx
+git add plugin/hooks/ui/visual.ts plugin/hooks/ui/animate.ts plugin/hooks/ui/band.tsx plugin/hooks/ui/mode.ts plugin/hooks/pipeline.ts plugin/hooks/register.tsx plugin/tests/visual.test.ts plugin/tests/band.test.tsx
 git commit -m "feat: add the now-playing band with equalizer and the mode label
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -4564,13 +5171,13 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ### Task 11: Tool-row badges
 
 **Files:**
-- Create: `plugin/hooks/ui/badges.tsx`
-- Modify: `plugin/hooks/register.tsx` (call `registerBadges(on)`)
+- Create: `plugin/hooks/ui/badges.tsx` (a plain view)
+- Modify: `plugin/hooks/register.tsx` (imports, the `ToolUse` render hook)
 - Test: `plugin/tests/badges.test.tsx`
 
 **Interfaces:**
-- **Consumes:** `taggedAtom`, `memberOf`, `settingsAtom`, `importsAtom`, `resolveSound`, `firePreview`, `act`, `logError`.
-- **Produces:** `registerBadges(on)`. Element keys:
+- **Consumes:** the `tagged` atom (`memberOf(taggedAtom, e)`), `resolveSound`, `firePreview`, `act`, `logError`.
+- **Produces:** `type BadgeKit`, `badgeView(kit, engine, sound, scope, onReplay)`. The ▶ closure calls `firePreview` through the stored host. Element keys:
   - badge Box: `pt-badge`
   - replay Button: `pt-replay`
   - hover-card Box: `pt-card`, sitting below the chip
@@ -4582,7 +5189,7 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
-import { bash, committed, world } from './world'
+import { START, bash, committed, world } from './world'
 
 const COMMIT = CATALOG.find(c => c.id === 'pt:anthropic-trust')!
 const row = (id: string) => ({
@@ -4596,7 +5203,7 @@ describe('tool-row badges', () => {
   for (const surface of ['terminal', 'desktop', 'vscode', 'mobile'] as const) {
     test(`a tagged row keeps the engine's row and adds a replayable chip (${surface})`, async ($, on) => {
       const w = world(on)
-      await $.session.start({} as never)
+      await $.session.start(START)
       const id = await bash($, w, 'git commit -m x', committed())
       const ui = await $.ui.mount({ ...row(id), surface })
       expect(await ui.find({ text: 'ENGINE' })).toBeDefined()
@@ -4609,7 +5216,7 @@ describe('tool-row badges', () => {
 
   test('untagged rows and Studio → badges off draw only the engine', async ($, on) => {
     const w = world(on, { store: { settings: { studio: { band: true, badges: false } } } })
-    await $.session.start({} as never)
+    await $.session.start(START)
     const id = await bash($, w, 'git commit -m x', committed())
     expect(await (await $.ui.mount({ ...row(id), surface: 'terminal' })).find({ key: 'pt-replay' })).toBeUndefined()
     expect(await (await $.ui.mount({ ...row('other'), surface: 'terminal' })).find({ key: 'pt-replay' })).toBeUndefined()
@@ -4617,14 +5224,14 @@ describe('tool-row badges', () => {
 
   test('a muted tag earns no badge', async ($, on) => {
     const w = world(on, { store: { settings: { muted: true } } })
-    await $.session.start({} as never)
+    await $.session.start(START)
     const id = await bash($, w, 'git commit -m x', committed())
     expect(await (await $.ui.mount({ ...row(id), surface: 'terminal' })).find({ key: 'pt-replay' })).toBeUndefined()
   })
 
   test('the hover card holds the caption, hidden until hovered', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     const id = await bash($, w, 'git commit -m x', committed())
     const ui = await $.ui.mount({ ...row(id), surface: 'terminal' })
     expect((await ui.find({ type: 'Box', key: 'pt-card' }))?.props.display).toBe('none')
@@ -4638,19 +5245,48 @@ describe('tool-row badges', () => {
 Run: `claude plugin test plugin`
 Expected: FAIL. No `pt-replay` button is found.
 
-- [ ] **Step 3: Implement**
+- [ ] **Step 3: Implement the view and its hook**
 
 `plugin/hooks/ui/badges.tsx`:
 ```tsx
-import { memberOf, read } from 'claude-code'
-import type { On } from 'claude-code'
+import type { Elements } from 'claude-code'
 
-import { resolveSound } from '../library'
-import { act, logError } from '../notify'
-import { firePreview } from '../pipeline'
-import { importsAtom, settingsAtom, taggedAtom } from '../state'
+import type { ResolvedSound } from '../library'
 
-export function registerBadges(on: On): void {
+export type BadgeKit = Pick<Elements['terminal'], 'Box' | 'Button' | 'Text'>
+
+/** The engine's tool row with a replayable chip under it, and the caption in a hover card (spec §8.4). */
+export function badgeView(kit: BadgeKit, engine: JSX.Element, sound: ResolvedSound, scope: string, onReplay: () => void): JSX.Element {
+  const { Box, Button, Text } = kit
+  return (
+    <Box flexDirection="column">
+      {engine}
+      <Box key="pt-badge" flexDirection="column">
+        <Button key="pt-replay" plain hover={{ scope, bold: true }} onPress={onReplay}>
+          ♫ {sound.riff} ▶
+        </Button>
+        <Box key="pt-card" display="none" hover={{ scope, display: 'flex' }}>
+          <Text dimColor>{sound.caption}</Text>
+        </Box>
+      </Box>
+    </Box>
+  )
+}
+```
+
+**Edit 1.** In `plugin/hooks/register.tsx`, add these imports (keep the relative imports sorted by path):
+```tsx
+import { resolveSound } from './library'
+import { badgeView } from './ui/badges'
+```
+
+**Edit 2.** In `plugin/hooks/register.tsx`, replace the line `import { fireDetached, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'` with:
+```tsx
+import { fireDetached, firePreview, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
+```
+
+**Edit 3.** In `plugin/hooks/register.tsx`, directly above the file's last line (`}`), add:
+```tsx
   on('ui.render', { component: 'ToolUse' }, async ($, e, next) => {
     try {
       const soundId = await read($, memberOf(taggedAtom, e))
@@ -4659,43 +5295,25 @@ export function registerBadges(on: On): void {
       if (settings?.studio.badges === false) return next(e)
       const sound = resolveSound(soundId, (await read($, importsAtom)) ?? [])
       if (sound === null) return next(e)
-
+      const engine = host ?? hostOf($)
       const { Box, Button, Text } = $.ui.resolve(e)
-      const scope = `pt-${e.requestId}`.slice(0, 64)
-      const engine = await next(e)
-      return (
-        <Box flexDirection="column">
-          {engine}
-          <Box key="pt-badge" flexDirection="column">
-            <Button key="pt-replay" plain hover={{ scope, bold: true }} onPress={() => act($, 'replay', () => firePreview($, soundId))}>
-              ♫ {sound.riff} ▶
-            </Button>
-            <Box key="pt-card" display="none" hover={{ scope, display: 'flex' }}>
-              <Text dimColor>{sound.caption}</Text>
-            </Box>
-          </Box>
-        </Box>
-      )
+      const replay = () => act(engine, 'replay', () => firePreview(engine, soundId))
+      return badgeView({ Box, Button, Text }, await next(e), sound, `pt-${e.requestId}`.slice(0, 64), replay)
     } catch (error) {
-      logError($, 'badge', error)
+      logError(host ?? hostOf($), 'badge', error)
       return next(e)
     }
   })
-}
 ```
 
-In `register.tsx`, add `import { registerBadges } from './ui/badges'` and call `registerBadges(on)` after `registerMode(on)`.
-
-**If Task 0 recorded "R4 no"** (no hover on the main screen), delete the `pt-card` Box and the Button's `hover` prop, along with the hover-card test.
+**If Task 0 recorded "R4 no"** (no hover on the main screen), delete the `pt-card` Box and the Button's `hover` prop in `badgeView`, along with the hover-card test.
 
 - [ ] **Step 4: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `badges.test.tsx` all pass.
+Expected: `badges.test.tsx` all pass (`114 pass` in total).
 
-Possible failures:
-- **Mobile refuses `hover` on `Button`:** gate the `hover` prop and the card on `e.surface !== 'mobile'`, then rerun.
-- **`ui.find({ type: 'Text', text: COMMIT.caption })` doesn't match:** the card's `Text` is the only element holding the caption, so check whether `.text` of a hidden Box is reported, and assert on the `pt-card` Box's `children` instead.
+If `ui.find({ type: 'Text', text: COMMIT.caption })` doesn't match: the card's `Text` is the only element holding the caption, so check whether `.text` of a hidden Box is reported, and assert on the `pt-card` Box's `children` instead.
 
 - [ ] **Step 5: Type-check, validate, commit**
 
@@ -4712,32 +5330,22 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 ### Task 12: The `/tags` pane
 
 **Files:**
-- Create: `plugin/hooks/ui/pane-actions.ts`, `plugin/hooks/ui/pane.tsx`
-- Modify: `plugin/hooks/register.tsx` (register `/tags` and call `registerPane(on)`)
-- Test: `plugin/tests/pane-actions.test.ts`, `plugin/tests/pane.test.tsx` (also the `$`-level import flows for Task 9)
+- Create: `plugin/hooks/ui/pane-actions.ts`, `plugin/hooks/ui/pane.tsx` (a plain view)
+- Modify: `plugin/hooks/register.tsx` (imports, one closure variable, one `session.start` line, the `/tags` and `Pane` hooks)
+- Test: `plugin/tests/pane-actions.test.ts`, `plugin/tests/pane.test.tsx` (also the engine-level import flows of Task 9)
+
+**How the pane acts.** The `ui.render{Pane}` hook in `register.tsx` reads state with its own `$` and hands `paneView` a `View` holding the stored host. Every button, select and input closure acts through `v.host` (`act(v.host, …, () => changeSettings(v.host, …))`, `firePreview(v.host, …)`, `toggleMute(v.host)`), so nothing in the pane needs `$`.
 
 **Interfaces:**
 - **Consumes:**
-  - `changeSettings`, `loadFromStore`, `validatePattern`
-  - `importSound`, `deleteImport`
-  - `firePreview`, `toggleMute`
-  - `isOnStage`
-  - `soundOptions`, `soundLabel`, `padSounds`, `resolveSound`
-  - `barsText`, `waveformLevels`, `progressOf`
-  - `act`, `logError`
-  - the atoms, `EMPTY_DRAFT`
-  - from `tests/world.tsx`: `world`, `bash`, `committed`, `PANE`, `EMPTY_WAV`
-- **Produces from `pane-actions.ts`, pure functions:**
-  - `toggleTrigger(s, id)`, `setTriggerSound(s, id, sound)`
-  - `setVolume(s, volume)`, `stepVolume(s, delta)`
-  - `toggleStudio(s, key)`
-  - `addCustom(s, trigger)`, `removeCustom(s, id)`, `toggleCustom(s, id)`, `setCustomSound(s, id, sound)`
-  - `newCustomId(existing)`
-- **Produces from `pane-actions.ts`, async actions:** `setDraft($, change)`, `saveCustom($, submitted)`, `runImport($, submitted)`, `removeImport($, id)`.
-- **Produces from `pane.tsx`:**
-  - `openPane($)`
-  - `registerPane(on)`, which hooks `command.run{tags}` and `ui.render{Pane, producer-tags}`
-  - the internal `type View` and section functions, which Task 13 extends with the fader
+  - `changeSettings`, `loadFromStore`, `validatePattern`; `importSound`, `deleteImport`; `firePreview`, `toggleMute`; `isOnStage`
+  - `soundOptions`, `soundLabel`, `padSounds`, `resolveSound`; `barsText`, `waveformLevels`, `progressOf`; `act`, `logError`; `EMPTY_DRAFT`
+  - from the tests: `world`, `bash`, `committed`, `PANE`, `EMPTY_WAV`, `START`
+- **Produces from `pane-actions.ts`:**
+  - pure: `toggleTrigger(s, id)`, `setTriggerSound(s, id, sound)`, `setVolume(s, volume)`, `stepVolume(s, delta)`, `toggleStudio(s, key)`, `addCustom(s, trigger)`, `removeCustom(s, id)`, `toggleCustom(s, id)`, `setCustomSound(s, id, sound)`, `newCustomId(existing)`
+  - over the Host: `setDraft(host, change)`, `saveCustom(host, submitted)`, `runImport(host, submitted)`, `removeImport(host, id)`
+- **Produces from `pane.tsx`:** `type PaneKit`, `type View`, `paneView(view)`, `mobilePaneView(kit, host, settings)`; Task 13 adds the fader to `View`.
+- **Hooks added in `register.tsx`:** `command.run{tags}`, `ui.render{Pane, producer-tags}`. `session.start` now registers `/tags`.
 - **Element keys:**
 
   | Area | Keys |
@@ -4789,21 +5397,21 @@ import { describe, expect, test, type Engine } from 'claude-code/testing'
 
 import { TRIGGERS } from '../hooks/constants'
 import type { ImportedSound, NowPlaying, Settings } from '../types'
-import { EMPTY_WAV, PANE, bash, committed, world, type WorldOptions } from './world'
+import { EMPTY_WAV, PANE, START, bash, committed, world, type WorldOptions } from './world'
 
 const settingsOf = (w: { state: Map<string, unknown> }) => w.state.get('settings') as Settings
 const importsOf = (w: { state: Map<string, unknown> }) => w.state.get('imports') as ImportedSound[]
 
-async function openOn($: Engine, on: On, surface: 'terminal' | 'desktop' | 'vscode' | 'mobile', options: WorldOptions = {}) {
+async function openOn<S extends 'terminal' | 'desktop' | 'vscode' | 'mobile'>($: Engine, on: On, surface: S, options: WorldOptions = {}) {
   const w = world(on, options)
-  await $.session.start({} as never)
+  await $.session.start(START)
   return { w, ui: await $.ui.mount({ ...PANE, surface }) }
 }
 
 describe('/tags', () => {
   test('registers, opens the pane and answers briefly', async ($, on) => {
     const w = world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     expect(w.registered).toContain('tags')
     expect((await $.command.run({ command: 'tags', args: '' } as never)).text).toBe('Opened Producer Tags.')
     expect(w.opened).toEqual(['producer-tags'])
@@ -4862,7 +5470,7 @@ describe('pane on terminal and desktop', () => {
 
   test('a preview interrupts a playing tag and skips the cooldown', async ($, on) => {
     const w = world(on, { audioMs: 3000 })
-    await $.session.start({} as never)
+    await $.session.start(START)
     await bash($, w, 'git commit -m x', committed())
     const ui = await $.ui.mount({ ...PANE, surface: 'terminal' })
     await ui.press({ key: 'play-git.commit' })
@@ -4874,10 +5482,11 @@ describe('pane on terminal and desktop', () => {
 
   test('waveforms are text on every surface; narrow panes hide them', async ($, on) => {
     world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     for (const surface of ['terminal', 'desktop', 'vscode'] as const) {
-      const wave = await (await $.ui.mount({ ...PANE, surface })).find({ key: 'wave-git.commit' })
-      expect(wave?.type, surface).toBe('Box')
+      const ui = await $.ui.mount({ ...PANE, surface })
+      expect((await ui.find({ key: 'wave-git.commit' }))?.type, surface).toBe('Box')
+      await ui.unmount()
     }
     const narrow = await $.ui.mount({ ...PANE, surface: 'terminal', props: { ...PANE.props, bodyColumns: 60 } })
     expect(await narrow.find({ key: 'wave-git.commit' })).toBeUndefined()
@@ -4938,14 +5547,6 @@ describe('importing through the pane', () => {
     expect(w.runs.some(r => r.argv[0] === 'rm')).toBe(false)
   })
 
-  test('windows copies with -LiteralPath through env', async ($, on) => {
-    const { w, ui } = await openOn($, on, 'terminal', { os: 'windows', files: { 'C:\\m\\[x].wav': { base64: EMPTY_WAV } } })
-    await ui.input({ key: 'import-path', text: 'C:\\m\\[x].wav' })
-    const copy = w.runs.find(r => r.argv[0] === 'powershell.exe')
-    expect(copy?.argv[4]).toContain('Copy-Item -LiteralPath $env:PT_SRC')
-    expect(copy?.env?.PT_SRC).toBe('C:\\m\\[x].wav')
-  })
-
   test('wsl converts a pasted C:\\ path', async ($, on) => {
     const { w, ui } = await openOn($, on, 'terminal', { os: 'wsl', files: { '/mnt/c/m/x.wav': { base64: EMPTY_WAV } } })
     await ui.input({ key: 'import-path', text: 'C:\\m\\x.wav' })
@@ -4968,23 +5569,23 @@ describe('other surfaces', () => {
 })
 ```
 
+`openOn` is generic over the surface so `ui.input` and `ui.select` type-check on the surfaces that have them. The waveform test unmounts each drawing, because the kit mounts one Pane instance per surface at a time. (The Windows `-LiteralPath` copy is pinned by Task 9's `copyCommand` test.)
+
 - [ ] **Step 3: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL. `pane-actions.test.ts` cannot resolve `../hooks/ui/pane-actions`, and `pane.test.tsx` sees `tags` unregistered.
+Expected: FAIL. `pane-actions.test.ts` reports `(fail) the file did not load`, and `pane.test.tsx` sees `tags` unregistered.
 
 - [ ] **Step 4: Implement `pane-actions.ts`**
 
 `plugin/hooks/ui/pane-actions.ts`:
 ```ts
-import { read, update } from 'claude-code'
-import type { EngineInterface } from 'claude-code'
-
 import type { CustomTrigger, PaneDraft, Settings, SoundId, TriggerId } from '../../types'
 import { MAX_CUSTOM } from '../constants'
+import type { Host } from '../host'
 import { deleteImport, importSound } from '../imports'
 import { changeSettings, validatePattern } from '../settings'
-import { EMPTY_DRAFT, paneDraftAtom } from '../state'
+import { EMPTY_DRAFT } from '../state'
 
 export function toggleTrigger(s: Settings, id: TriggerId): Settings {
   return { ...s, triggers: { ...s.triggers, [id]: { ...s.triggers[id], enabled: !s.triggers[id].enabled } } }
@@ -5026,37 +5627,37 @@ export function newCustomId(existing: readonly CustomTrigger[]): string {
   for (let n = 1; ; n++) if (!existing.some(c => c.id === `c${n}`)) return `c${n}`
 }
 
-export async function setDraft($: EngineInterface, change: (draft: PaneDraft) => PaneDraft): Promise<void> {
-  await update($, paneDraftAtom, change)
+export async function setDraft(host: Host, change: (draft: PaneDraft) => PaneDraft): Promise<void> {
+  await host.state.paneDraft.update(change)
 }
 
-export async function saveCustom($: EngineInterface, submitted: string | null): Promise<void> {
-  const draft = await read($, paneDraftAtom)
+export async function saveCustom(host: Host, submitted: string | null): Promise<void> {
+  const draft = await host.state.paneDraft.read()
   const pattern = (submitted ?? draft.customPattern).trim()
   const error = validatePattern(pattern)
   if (error !== null) {
-    await setDraft($, d => ({ ...d, customPattern: pattern, message: { kind: 'error', text: error } }))
+    await setDraft(host, d => ({ ...d, customPattern: pattern, message: { kind: 'error', text: error } }))
     return
   }
-  await changeSettings($, s =>
+  await changeSettings(host, s =>
     addCustom(s, { id: newCustomId(s.custom), pattern, outcome: draft.customOutcome, sound: draft.customSound, enabled: true, isInvalid: false }),
   )
-  await setDraft($, () => ({ ...EMPTY_DRAFT, message: { kind: 'ok', text: `Added /${pattern}/.` } }))
+  await setDraft(host, () => ({ ...EMPTY_DRAFT, message: { kind: 'ok', text: `Added /${pattern}/.` } }))
 }
 
-export async function runImport($: EngineInterface, submitted: string | null): Promise<void> {
-  const path = submitted ?? (await read($, paneDraftAtom)).importPath
-  const result = await importSound($, path)
-  await setDraft($, d =>
+export async function runImport(host: Host, submitted: string | null): Promise<void> {
+  const path = submitted ?? (await host.state.paneDraft.read()).importPath
+  const result = await importSound(host, path)
+  await setDraft(host, d =>
     result.ok
       ? { ...d, importPath: '', message: { kind: 'ok', text: result.warning ?? `Imported "${result.sound.name}".` } }
       : { ...d, importPath: path, message: { kind: 'error', text: result.error } },
   )
 }
 
-export async function removeImport($: EngineInterface, id: SoundId): Promise<void> {
-  await deleteImport($, id)
-  await setDraft($, d => ({ ...d, message: { kind: 'ok', text: 'Removed.' } }))
+export async function removeImport(host: Host, id: SoundId): Promise<void> {
+  await deleteImport(host, id)
+  await setDraft(host, d => ({ ...d, message: { kind: 'ok', text: 'Removed.' } }))
 }
 ```
 
@@ -5064,17 +5665,15 @@ export async function removeImport($: EngineInterface, id: SoundId): Promise<voi
 
 `plugin/hooks/ui/pane.tsx`:
 ```tsx
-import { read } from 'claude-code'
-import type { Elements, EngineInterface, On } from 'claude-code'
+import type { Elements } from 'claude-code'
 
 import type { ImportedSound, Outcome, PaneDraft, Settings, SoundId } from '../../types'
-import { MAX_CUSTOM, PANE_ID, TRIGGERS, WINDOWS_ENGINE } from '../constants'
+import { MAX_CUSTOM, TRIGGERS } from '../constants'
+import type { Host } from '../host'
 import { padSounds, resolveSound, soundLabel, soundOptions } from '../library'
-import { act, logError } from '../notify'
+import { act } from '../notify'
 import { firePreview, toggleMute } from '../pipeline'
-import { changeSettings, loadFromStore } from '../settings'
-import { isOnStage } from '../stage'
-import { bandFrameAtom, importsAtom, nowPlayingAtom, paneDraftAtom, platformAtom, settingsAtom } from '../state'
+import { changeSettings } from '../settings'
 import {
   removeCustom,
   removeImport,
@@ -5088,19 +5687,18 @@ import {
   toggleStudio,
   toggleTrigger,
 } from './pane-actions'
-import { barsText, progressOf, waveformLevels } from './visual'
+import { barsText, waveformLevels } from './visual'
 
 const WAVE_COLUMNS = 16
 const OUTCOME_LABEL: Record<Outcome, string> = { success: 'on success', fail: 'on failure', any: 'either way' }
 const OUTCOME_OPTIONS = Object.entries(OUTCOME_LABEL).map(([value, label]) => ({ value, label }))
 
-/** Set while a render has asked for the store to load, so redraws don't ask again. */
-let isLoading = false
+export type PaneKit = Pick<Elements['terminal'], 'Box' | 'Button' | 'Input' | 'Select' | 'Text'>
 
-/** What every section of the pane draws from. */
-type View = {
-  $: EngineInterface
-  els: Pick<Elements['terminal'], 'Box' | 'Button' | 'Input' | 'Select' | 'Text'>
+/** What every section of the pane draws from; `host` is what its buttons act through. */
+export type View = {
+  host: Host
+  els: PaneKit
   settings: Settings
   imports: ImportedSound[]
   draft: PaneDraft
@@ -5110,11 +5708,7 @@ type View = {
   hasVolume: boolean
 }
 
-export async function openPane($: EngineInterface): Promise<void> {
-  await $.ui.open({ id: PANE_ID, title: 'Producer Tags', focus: true, closeOnEscape: true })
-}
-
-const change = (v: View, where: string, fn: (s: Settings) => Settings) => () => act(v.$, where, () => changeSettings(v.$, fn))
+const change = (v: View, where: string, fn: (s: Settings) => Settings) => () => act(v.host, where, () => changeSettings(v.host, fn))
 
 function header(v: View): JSX.Element {
   const { Box, Button, Text } = v.els
@@ -5124,7 +5718,7 @@ function header(v: View): JSX.Element {
       {v.hasVolume && <Button key="vol-down" label="−" onPress={change(v, 'volume', s => stepVolume(s, -10))} />}
       {v.hasVolume && <Text>{v.settings.volume}%</Text>}
       {v.hasVolume && <Button key="vol-up" label="+" onPress={change(v, 'volume', s => stepVolume(s, 10))} />}
-      <Button key="mute" label={v.settings.muted ? 'Unmute' : 'Mute'} onPress={() => act(v.$, 'mute', () => toggleMute(v.$))} />
+      <Button key="mute" label={v.settings.muted ? 'Unmute' : 'Mute'} onPress={() => act(v.host, 'mute', () => toggleMute(v.host))} />
     </Box>
   )
 }
@@ -5152,7 +5746,7 @@ function triggerRows(v: View): JSX.Element[] {
         <Button key={`toggle-${t.id}`} plain label={setting.enabled ? '●' : '○'} onPress={change(v, 'toggle', s => toggleTrigger(s, t.id))} />
         <Text>{t.label.padEnd(16)}</Text>
         <Select key={`sound-${t.id}`} options={v.options} value={setting.sound} onSelect={value => change(v, 'sound', s => setTriggerSound(s, t.id, value))()} />
-        <Button key={`play-${t.id}`} plain label="▶" onPress={() => act(v.$, 'preview', () => firePreview(v.$, setting.sound))} />
+        <Button key={`play-${t.id}`} plain label="▶" onPress={() => act(v.host, 'preview', () => firePreview(v.host, setting.sound))} />
         {wave(v, setting.sound, `wave-${t.id}`)}
       </Box>
     )
@@ -5170,17 +5764,17 @@ function customSection(v: View): JSX.Element {
           label="pattern"
           placeholder="docker compose up"
           value={v.draft.customPattern}
-          onInput={value => act(v.$, 'draft', () => setDraft(v.$, d => ({ ...d, customPattern: value })))}
-          onSubmit={value => act(v.$, 'custom', () => saveCustom(v.$, value))}
+          onInput={value => act(v.host, 'draft', () => setDraft(v.host, d => ({ ...d, customPattern: value })))}
+          onSubmit={value => act(v.host, 'custom', () => saveCustom(v.host, value))}
         />
-        <Select key="custom-outcome" options={OUTCOME_OPTIONS} value={v.draft.customOutcome} onSelect={value => act(v.$, 'draft', () => setDraft(v.$, d => ({ ...d, customOutcome: value as Outcome })))} />
-        <Select key="custom-sound" options={v.options} value={v.draft.customSound} onSelect={value => act(v.$, 'draft', () => setDraft(v.$, d => ({ ...d, customSound: value })))} />
-        <Button key="custom-save" label="Save" variant="primary" onPress={() => act(v.$, 'custom', () => saveCustom(v.$, null))} />
-        <Button key="custom-cancel" label="Cancel" onPress={() => act(v.$, 'draft', () => setDraft(v.$, d => ({ ...d, isAdding: false, customPattern: '', message: null })))} />
+        <Select key="custom-outcome" options={OUTCOME_OPTIONS} value={v.draft.customOutcome} onSelect={value => act(v.host, 'draft', () => setDraft(v.host, d => ({ ...d, customOutcome: value as Outcome })))} />
+        <Select key="custom-sound" options={v.options} value={v.draft.customSound} onSelect={value => act(v.host, 'draft', () => setDraft(v.host, d => ({ ...d, customSound: value })))} />
+        <Button key="custom-save" label="Save" variant="primary" onPress={() => act(v.host, 'custom', () => saveCustom(v.host, null))} />
+        <Button key="custom-cancel" label="Cancel" onPress={() => act(v.host, 'draft', () => setDraft(v.host, d => ({ ...d, isAdding: false, customPattern: '', message: null })))} />
       </Box>
     )
   } else if (v.settings.custom.length < MAX_CUSTOM) {
-    footer = <Button key="custom-add" label="+ Add" onPress={() => act(v.$, 'draft', () => setDraft(v.$, d => ({ ...d, isAdding: true, message: null })))} />
+    footer = <Button key="custom-add" label="+ Add" onPress={() => act(v.host, 'draft', () => setDraft(v.host, d => ({ ...d, isAdding: true, message: null })))} />
   } else {
     footer = <Text dimColor>20 custom triggers is the limit.</Text>
   }
@@ -5195,7 +5789,7 @@ function customSection(v: View): JSX.Element {
           </Text>
           {c.isInvalid && <Text color="error">⚠ invalid</Text>}
           <Select key={`csound-${c.id}`} options={v.options} value={c.sound} onSelect={value => change(v, 'custom', s => setCustomSound(s, c.id, value))()} />
-          <Button key={`cplay-${c.id}`} plain label="▶" onPress={() => act(v.$, 'preview', () => firePreview(v.$, c.sound))} />
+          <Button key={`cplay-${c.id}`} plain label="▶" onPress={() => act(v.host, 'preview', () => firePreview(v.host, c.sound))} />
           <Button key={`cdel-${c.id}`} plain label="✕" onPress={change(v, 'custom', s => removeCustom(s, c.id))} />
         </Box>
       ))}
@@ -5214,16 +5808,16 @@ function importSection(v: View): JSX.Element {
           key="import-path"
           placeholder="~/Music/mytag.wav"
           value={v.draft.importPath}
-          onInput={value => act(v.$, 'draft', () => setDraft(v.$, d => ({ ...d, importPath: value })))}
-          onSubmit={value => act(v.$, 'import', () => runImport(v.$, value))}
+          onInput={value => act(v.host, 'draft', () => setDraft(v.host, d => ({ ...d, importPath: value })))}
+          onSubmit={value => act(v.host, 'import', () => runImport(v.host, value))}
         />
-        <Button key="import-go" label="Import" onPress={() => act(v.$, 'import', () => runImport(v.$, null))} />
+        <Button key="import-go" label="Import" onPress={() => act(v.host, 'import', () => runImport(v.host, null))} />
       </Box>
       {v.imports.map(sound => (
         <Box key={`imp-${sound.id}`} gap={1}>
           <Text>{sound.name}</Text>
-          <Button key={`impplay-${sound.id}`} plain label="▶" onPress={() => act(v.$, 'preview', () => firePreview(v.$, sound.id))} />
-          <Button key={`impdel-${sound.id}`} plain label="✕" onPress={() => act(v.$, 'delete', () => removeImport(v.$, sound.id))} />
+          <Button key={`impplay-${sound.id}`} plain label="▶" onPress={() => act(v.host, 'preview', () => firePreview(v.host, sound.id))} />
+          <Button key={`impdel-${sound.id}`} plain label="✕" onPress={() => act(v.host, 'delete', () => removeImport(v.host, sound.id))} />
         </Box>
       ))}
       {v.draft.message !== null && (
@@ -5242,7 +5836,7 @@ function padsAndStudio(v: View): JSX.Element {
       <Text bold>Pads</Text>
       <Box key="pads" gap={1}>
         {padSounds().map((id, i) => (
-          <Button key={`pad-${i + 1}`} hotkey={String(i + 1)} label={soundLabel(id, v.imports)} onPress={() => act(v.$, 'pad', () => firePreview(v.$, id))} />
+          <Button key={`pad-${i + 1}`} hotkey={String(i + 1)} label={soundLabel(id, v.imports)} onPress={() => act(v.host, 'pad', () => firePreview(v.host, id))} />
         ))}
       </Box>
       <Text bold>Studio</Text>
@@ -5254,85 +5848,118 @@ function padsAndStudio(v: View): JSX.Element {
   )
 }
 
-export function registerPane(on: On): void {
+/** The whole pane on terminal, desktop and VS Code (spec §8.2). */
+export function paneView(v: View): JSX.Element {
+  const { Box } = v.els
+  return (
+    <Box flexDirection="column">
+      {header(v)}
+      {triggerRows(v)}
+      {customSection(v)}
+      {importSection(v)}
+      {padsAndStudio(v)}
+    </Box>
+  )
+}
+
+/** Mobile: one line, and the mute button. */
+export function mobilePaneView(kit: Pick<PaneKit, 'Box' | 'Button' | 'Text'>, host: Host, settings: Settings): JSX.Element {
+  const { Box, Button, Text } = kit
+  return (
+    <Box flexDirection="column">
+      <Text>Open /tags in the terminal or desktop app to edit.</Text>
+      <Button key="mute" label={settings.muted ? 'Unmute' : 'Mute'} onPress={() => act(host, 'mute', () => toggleMute(host))} />
+    </Box>
+  )
+}
+```
+
+- [ ] **Step 6: Register `/tags` and the pane in `register.tsx`**
+
+**Edit 1.** In `plugin/hooks/register.tsx`, add these imports (keep the relative imports sorted by path):
+```tsx
+import { PANE_ID, WINDOWS_ENGINE } from './constants'
+import { mobilePaneView, paneView } from './ui/pane'
+import { progressOf } from './ui/visual'
+```
+
+**Edit 2.** In `plugin/hooks/register.tsx`, replace the line `import { resolveSound } from './library'` with:
+```tsx
+import { resolveSound, soundOptions } from './library'
+```
+
+**Edit 3.** In `plugin/hooks/register.tsx`, after the line `let muteCommand: 'mute' | 'tags-mute' = 'mute'`, add:
+```tsx
+  /** Set while a render has asked for the store to load, so redraws don't ask again. */
+  let isLoading = false
+```
+
+**Edit 4.** In `plugin/hooks/register.tsx`, after the line `await recoverStage(engine)`, add:
+```tsx
+      await engine.registerCommand({ name: 'tags', description: 'Open the Producer Tags pane' })
+```
+
+**Edit 5.** In `plugin/hooks/register.tsx`, directly above the file's last line (`}`), add:
+```tsx
   on('command.run', { command: 'tags' }, async $ => {
+    const engine = host ?? hostOf($)
     try {
-      await openPane($)
+      await engine.openPane({ id: PANE_ID, title: 'Producer Tags', focus: true, closeOnEscape: true })
       return { text: 'Opened Producer Tags.' }
     } catch (error) {
-      logError($, '/tags', error)
+      logError(engine, '/tags', error)
       return { text: 'Producer Tags hit an error.' }
     }
   })
 
   on('ui.render', { component: 'Pane', requestId: PANE_ID }, async ($, e) => {
+    const engine = host ?? hostOf($)
     try {
       const settings = await read($, settingsAtom)
       const imports = (await read($, importsAtom)) ?? []
       if (settings === null) {
         if (!isLoading) {
           isLoading = true
-          $.clock.after(0, () => act($, 'pane load', () => loadFromStore($).finally(() => (isLoading = false))))
+          engine.after(0, () => act(engine, 'pane load', () => loadFromStore(engine).finally(() => (isLoading = false))))
         }
         const { Text } = $.ui.resolve(e)
         return <Text dimColor>Loading Producer Tags…</Text>
       }
       if (e.surface === 'mobile') {
         const { Box, Button, Text } = $.ui.resolve(e)
-        return (
-          <Box flexDirection="column">
-            <Text>Open /tags in the terminal or desktop app to edit.</Text>
-            <Button key="mute" label={settings.muted ? 'Unmute' : 'Mute'} onPress={() => act($, 'mute', () => toggleMute($))} />
-          </Box>
-        )
+        return mobilePaneView({ Box, Button, Text }, engine, settings)
       }
-
       const { Box, Button, Input, Select, Text } = $.ui.resolve(e)
       const platform = await read($, platformAtom)
       const np = await read($, nowPlayingAtom)
       const now = await $.clock.now()
-      const preview = np !== null && np.key === 'preview' && isOnStage(np, now) ? { soundId: np.soundId, progress: progressOf(np, now) } : null
-      if (preview !== null) await read($, bandFrameAtom)
-      const view: View = {
-        $,
+      const previewing = np !== null && np.key === 'preview' && isOnStage(np, now)
+      if (previewing) await read($, bandFrameAtom)
+      return paneView({
+        host: engine,
         els: { Box, Button, Input, Select, Text },
         settings,
         imports,
         draft: await read($, paneDraftAtom),
         options: soundOptions(imports),
-        preview,
+        preview: previewing ? { soundId: np.soundId, progress: progressOf(np, now) } : null,
         isWide: e.props.bodyColumns >= 80,
         hasVolume: !((platform?.os === 'windows' || platform?.os === 'wsl') && WINDOWS_ENGINE === 'soundplayer'),
-      }
-      return (
-        <Box flexDirection="column">
-          {header(view)}
-          {triggerRows(view)}
-          {customSection(view)}
-          {importSection(view)}
-          {padsAndStudio(view)}
-        </Box>
-      )
+      })
     } catch (error) {
-      logError($, 'pane', error)
+      logError(engine, 'pane', error)
       const { Text } = $.ui.resolve(e)
       return <Text color="error">Producer Tags could not draw this pane.</Text>
     }
   })
-}
 ```
 
-- [ ] **Step 6: Register `/tags` and the pane in `register.tsx`**
-
-Add `import { registerPane } from './ui/pane'` and call `registerPane(on)` after `registerBadges(on)`. In the `session.start` hook, before `muteCommand = await registerMute($)`, add:
-```tsx
-      await $.command.register({ name: 'tags', description: 'Open the Producer Tags pane' })
-```
+Check the outline: `grep -n "^  on('" plugin/hooks/register.tsx` now ends with `command.run` (`tags`) and `ui.render` (`Pane`), and `session.start` registers `tags` before `registerMute`.
 
 - [ ] **Step 7: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `pane-actions.test.ts` and `pane.test.tsx` pass, and so does everything else.
+Expected: `pane-actions.test.ts` and `pane.test.tsx` pass, and so does everything else (`136 pass` in total).
 
 How to read the likely failures:
 - **"a prop it does not take: gap":** remove that prop.
@@ -5342,8 +5969,10 @@ How to read the likely failures:
 
 - [ ] **Step 8: Type-check, validate, commit**
 
+Run: `npx tsc -p . && claude plugin validate plugin`
+Expected: validation passes and lists `command.run{command=tags}` and `ui.render{component=Pane, requestId=?}` among the hooks.
+
 ```bash
-npx tsc -p . && claude plugin validate plugin
 git add plugin/hooks/ui/pane-actions.ts plugin/hooks/ui/pane.tsx plugin/hooks/register.tsx plugin/tests/pane-actions.test.ts plugin/tests/pane.test.tsx
 git commit -m "feat: add the /tags pane with triggers, custom rules, imports, pads and studio
 
@@ -5356,18 +5985,15 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 **Files:**
 - Create: `plugin/hooks/ui/fader.client.tsx`
-- Modify: `plugin/hooks/ui/pane.tsx`, to draw the fader in the header and receive its messages
+- Modify: `plugin/hooks/ui/pane.tsx` (the fader slot in the header), `plugin/hooks/register.tsx` (draw the fader, receive its posts)
 - Test: `plugin/tests/fader.test.tsx`
 
 **Interfaces:**
-- **Consumes:**
-  - The pane's `View`, `header`, and `registerPane` (Task 12).
-  - `changeSettings($, fn, { persist })` (Task 4).
-  - `setVolume` (Task 12).
+- **Consumes:** the pane's `View` and `header` (Task 12); `changeSettings(host, change, { persist })` (Task 4); `setVolume` (Task 12).
 - **Produces:**
   - The default export `Fader: ClientModule<{ volume: number }, { volume: number; isDragging: boolean }>`.
-  - The posts `{ volume: number, isFinal: boolean }`, read by a `ui.message` hook in `pane.tsx`.
-  - The element key `fader`.
+  - The posts `{ volume: number, isFinal: boolean }`, read by a `ui.message` hook in `register.tsx` (the plugin's only `ui.message` hook).
+  - The element key `fader`. The `Client`'s `module` path is relative to the file that draws it, so `register.tsx` names `./ui/fader.client.tsx`.
 
 - [ ] **Step 1: Write the failing tests**
 
@@ -5376,13 +6002,13 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 import { describe, expect, test } from 'claude-code/testing'
 
 import type { Settings } from '../types'
-import { PANE, world } from './world'
+import { PANE, START, world } from './world'
 
 describe('fader', () => {
   for (const surface of ['terminal', 'desktop'] as const) {
     test(`drag updates live, persists on release; arrows step by 5 from the current volume (${surface})`, async ($, on) => {
       const w = world(on)
-      await $.session.start({} as never)
+      await $.session.start(START)
       const ui = await $.ui.mount({ ...PANE, surface })
       await ui.resize({ columns: 24, rows: 1, in: 'fader' })
       await ui.pointer({ type: 'down', x: 0, y: 0, button: 'left', in: 'fader' })
@@ -5401,7 +6027,7 @@ describe('fader', () => {
 
   test('vscode and mobile have no pointer fader', async ($, on) => {
     world(on)
-    await $.session.start({} as never)
+    await $.session.start(START)
     for (const surface of ['vscode', 'mobile'] as const) {
       expect(await (await $.ui.mount({ ...PANE, surface })).find({ key: 'fader' }), surface).toBeUndefined()
     }
@@ -5417,7 +6043,7 @@ describe('fader', () => {
 - [ ] **Step 2: Run the tests to see them fail**
 
 Run: `claude plugin test plugin`
-Expected: FAIL. `ui.resize` rejects because the drawing holds no `Client` keyed `fader`.
+Expected: FAIL. `ui.resize` rejects with `the drawing holds no Client keyed "fader"`.
 
 - [ ] **Step 3: Implement the Client module**
 
@@ -5473,53 +6099,77 @@ export default Fader
 
 - [ ] **Step 4: Draw it in the pane and receive its posts**
 
-In `plugin/hooks/ui/pane.tsx`, make these edits:
+**Edit 1.** In `plugin/hooks/ui/pane.tsx`, after the line `hasVolume: boolean`, add:
+```tsx
+  fader: JSX.Element | null
+```
 
-1. Add `fader: JSX.Element | null` to the `View` type.
-2. In `header`, after the `vol-up` Button line, add:
-   ```tsx
-         {v.fader}
-   ```
-3. Add `setVolume` to the `./pane-actions` import.
-4. In the `ui.render` hook, before `const view: View = {`, add:
-   ```tsx
-      let fader: JSX.Element | null = null
+**Edit 2.** In `plugin/hooks/ui/pane.tsx`, after the line `{v.hasVolume && <Button key="vol-up" label="+" onPress={change(v, 'volume', s => stepVolume(s, 10))} />}`, add:
+```tsx
+      {v.fader}
+```
+
+**Edit 3.** In `plugin/hooks/register.tsx`, add these imports (keep the relative imports sorted by path):
+```tsx
+import { setVolume } from './ui/pane-actions'
+```
+
+**Edit 4.** In `plugin/hooks/register.tsx`, replace the line `import { ensureLoaded, loadFromStore } from './settings'` with:
+```tsx
+import { changeSettings, ensureLoaded, loadFromStore } from './settings'
+```
+
+**Edit 5.** In `plugin/hooks/register.tsx`, after the line `if (previewing) await read($, bandFrameAtom)`, add:
+```tsx
       const hasVolume = !((platform?.os === 'windows' || platform?.os === 'wsl') && WINDOWS_ENGINE === 'soundplayer')
+      let fader: JSX.Element | null = null
       if (hasVolume && (e.surface === 'terminal' || e.surface === 'desktop')) {
         const { Client } = $.ui.resolve(e)
-        fader = <Client key="fader" module="./fader.client.tsx" props={{ volume: settings.volume }} width={24} height={1} />
+        fader = <Client key="fader" module="./ui/fader.client.tsx" props={{ volume: settings.volume }} width={24} height={1} />
       }
-   ```
-   Then replace the view's `hasVolume: !(…)` line with `hasVolume,` and add `fader,` to the view.
-5. In `registerPane`, after the `command.run` hook, add:
-   ```tsx
-     on('ui.message', async ($, e, next) => {
-       if (e.requestId !== PANE_ID || e.element !== 'fader') return next(e)
-       try {
-         const data = e.data as { volume?: unknown; isFinal?: unknown }
-         if (typeof data.volume === 'number') {
-           const volume = data.volume
-           await changeSettings($, s => setVolume(s, volume), { persist: data.isFinal === true })
-         }
-       } catch (error) {
-         logError($, 'fader', error)
-       }
-       return {}
-     })
-   ```
+```
+
+**Edit 6.** In `plugin/hooks/register.tsx`, replace the line `hasVolume: !((platform?.os === 'windows' || platform?.os === 'wsl') && WINDOWS_ENGINE === 'soundplayer'),` with:
+```tsx
+        hasVolume,
+        fader,
+```
+
+**Edit 7.** In `plugin/hooks/register.tsx`, directly above the file's last line (`}`), add:
+```tsx
+  // The fader's posts: live values while dragging (state only), then a final one that is saved.
+  on('ui.message', async ($, e, next) => {
+    if (e.requestId !== PANE_ID || e.element !== 'fader') return next(e)
+    const engine = host ?? hostOf($)
+    try {
+      const data = e.data as { volume?: unknown; isFinal?: unknown }
+      if (typeof data.volume === 'number') {
+        const volume = data.volume
+        await changeSettings(engine, s => setVolume(s, volume), { persist: data.isFinal === true })
+      }
+    } catch (error) {
+      logError(engine, 'fader', error)
+    }
+    return {}
+  })
+```
 
 **If Task 0 recorded "R4 no"** (no pointer events on the main screen), change the fader condition to `hasVolume && e.viewport?.isFullscreen === true && (e.surface === 'terminal' || e.surface === 'desktop')`, and pass `viewport: { columns: 120, rows: 40, isFullscreen: true }` in the fader tests' mounts.
+
+Check the outline: `grep -n "^  on('" plugin/hooks/register.tsx` ends with `ui.message`, and `grep -c "hasVolume" plugin/hooks/register.tsx` prints `3`.
 
 - [ ] **Step 5: Run the tests to see them pass**
 
 Run: `claude plugin test plugin`
-Expected: `fader.test.tsx` passes on both surfaces, and Task 12's pane tests still pass.
+Expected: `fader.test.tsx` passes on both surfaces, and Task 12's pane tests still pass (`139 pass` in total).
 
 - [ ] **Step 6: Type-check, validate, commit**
 
+Run: `npx tsc -p . && claude plugin validate plugin`
+Expected: validation passes and lists `surface modules: hooks/ui/fader.client.tsx`.
+
 ```bash
-npx tsc -p . && claude plugin validate plugin
-git add plugin/hooks/ui/fader.client.tsx plugin/hooks/ui/pane.tsx plugin/tests/fader.test.tsx
+git add plugin/hooks/ui/fader.client.tsx plugin/hooks/ui/pane.tsx plugin/hooks/register.tsx plugin/tests/fader.test.tsx
 git commit -m "feat: add a pointer and keyboard volume fader
 
 Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
@@ -5748,6 +6398,7 @@ python3 -I tools/generate-tags/smoke_test.py
 - The badge shows on a commit row, and its hover card shows when hovered.
 - The fader drags (and in fullscreen mode).
 - Pads `1`–`9` play, and digits typed into the pane's text fields stay in the field.
+- Hot reload: with `claude --plugin-dir ./plugin`, save any file under `plugin/hooks/` while a tag plays. The band clears by the clip's deadline, the next commit plays its tag, and the pane's buttons still work.
 ````
 
 Record a GIF of the band and the pane on macOS for `docs/demo.gif`. This needs a person and a screen recorder. Commit it with the README, or open a follow-up issue and remove the image line until it exists.
@@ -5831,6 +6482,8 @@ Co-Authored-By: Claude Opus 5.5 (1M context) <noreply@anthropic.com>"
 
 Ask the user to run `claude --plugin-dir ./plugin` from the repo, then walk through README's manual checklist together. That covers every default-on trigger, plus `/mute` mid-clip, import/preview/delete, the band, badges, the fader, and pads.
 
+Include the hot-reload item (save a file under `plugin/hooks/` mid-clip): it is the one case where the binding `session.start` stored is replaced while a clip and its timers are running.
+
 Record each item as pass or fail. A failure gets a fix through superpowers:systematic-debugging, with a regression test where the test kit can express it, and a commit.
 
 - [ ] **Step 2: Run the tier 1 and tier 2 checks (needs the user's Mac and a Linux box)**
@@ -5847,12 +6500,12 @@ If a required machine isn't available, record "pending" in §14. Don't mark the 
 - [ ] **Step 2b: Apply the conditional spec items**
 
 - **Windows check (R0):** if a Windows install is available, check whether native sessions run commands through `Bash` or a `PowerShell` tool. If it's `PowerShell`:
-  - add it to the `tool.call` matcher (`{ tool: ['Bash', 'PowerShell'] }`)
+  - add it to the `tool.call` matcher in `register.tsx` (`{ tool: ['Bash', 'PowerShell'] }`)
   - add a `;`-only segmenter for it
   - add a regex git fallback for results without `gitOperation` (`git commit`, `git push`, `git merge`, `gh pr merge` at segment start)
 
   Each gets tests in `triggers.test.ts` and `pipeline.test.ts`. If no Windows install is available, record R0 as "pending" and add it to README's known limitations.
-- **WSL path check (R2):** if only the `\\wsl.localhost` path failed in Task 0, copy the clip to `%TEMP%\producer-tags\<file>` once per sound before playing. Use `Copy-Item -LiteralPath`, with the paths passed in env. Add a `pipeline.test.ts` case for the WSL argv.
+- **WSL path check (R2):** if only the `\\wsl.localhost` path failed in Task 0, copy the clip to `%TEMP%\producer-tags\<file>` once per sound before playing, in `player.ts`'s `playPowerShell`. Build the copy's argv in a pure function in `player.ts` (`Copy-Item -LiteralPath`, with the paths passed in env) and test it in `player.test.ts`. Add a `pipeline.test.ts` case for the WSL argv.
 
 - [ ] **Step 3: Full suite, final time**
 
