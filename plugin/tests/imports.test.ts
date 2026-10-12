@@ -99,3 +99,67 @@ describe('importSound and deleteImport through a Host', () => {
     expect(await importSound(host, '/a/none.wav')).toEqual({ ok: false, error: 'No file at /a/none.wav.' })
   })
 })
+
+describe('fix round 1', () => {
+  const mac = (argv: readonly string[]) => (argv[0] === 'uname' ? { stdout: 'Darwin\n' } : {})
+  test('POSIX backslash escapes of any character are removed', () => {
+    expect(cleanPastedPath('/m/Kick\\,\\ v2.wav', 'mac')).toBe('/m/Kick, v2.wav')
+    expect(cleanPastedPath('/m/Beat\\ \\#1.wav', 'linux')).toBe('/m/Beat #1.wav')
+    expect(cleanPastedPath('/m/a\\\\b.wav', 'mac')).toBe('/m/a\\b.wav')
+  })
+  test('Windows drive paths are never unescaped, on windows or wsl', () => {
+    expect(cleanPastedPath('C:\\Music\\[WIP]\\kick.wav', 'wsl')).toBe('C:\\Music\\[WIP]\\kick.wav')
+    expect(cleanPastedPath('"C:\\a\\(x)\\b.wav"', 'wsl')).toBe('C:\\a\\(x)\\b.wav')
+    expect(cleanPastedPath('C:\\a\\(x)\\b.wav', 'windows')).toBe('C:\\a\\(x)\\b.wav')
+  })
+  test('wslpath receives exactly the cleaned Windows path', async () => {
+    const host = fakeHost({
+      env: { HOME: '/home/dev' },
+      files: { '/proc/version': 'Linux version 5 microsoft-standard-WSL2' },
+      run: argv => (argv[0] === 'uname' ? { stdout: 'Linux\n' } : argv[0] === 'wslpath' ? { stdout: '/mnt/c/a/(x)/b.wav\n' } : {}),
+    })
+    await importSound(host, '"C:\\a\\(x)\\b.wav"')
+    expect(host.runs.find(r => r.argv[0] === 'wslpath')?.argv).toEqual(['wslpath', '-u', 'C:\\a\\(x)\\b.wav'])
+  })
+  test('overlapping imports of the same name get distinct ids and files', async () => {
+    const host = fakeHost({ run: mac, files: { '/a/x.wav': { base64: EMPTY_WAV } } })
+    const [a, b] = await Promise.all([importSound(host, '/a/x.wav'), importSound(host, '/a/x.wav')])
+    expect(a).toMatchObject({ ok: true, sound: { id: 'user:x' } })
+    expect(b).toMatchObject({ ok: true, sound: { id: 'user:x-2' } })
+    const files = (host.stored.get('imports') as { file: string }[]).map(s => s.file)
+    expect(new Set(files).size).toBe(2)
+  })
+  test('deleting only removes a copy inside the sounds folder', async () => {
+    const outside = { id: 'user:o', name: 'o', file: '/etc/passwd', ext: 'wav', bytes: 1, durationMs: null, peaks: null, isCopy: true }
+    const host = fakeHost({ run: mac, store: { imports: [outside] } })
+    expect(await deleteImport(host, 'user:o')).toBe(true)
+    expect(host.runs.some(r => r.argv[0] === 'rm')).toBe(false)
+    expect(host.stored.get('imports')).toEqual([])
+  })
+  test('deleting a non-copy runs nothing', async () => {
+    const host = fakeHost({ run: mac, files: { '/a/x.wav': { base64: EMPTY_WAV } } })
+    await importSound(host, '/a/x.wav')
+    host.runs.length = 0
+    const imports = host.stored.get('imports') as { id: string }[]
+    host.state.imports.update(() => imports.map(s => ({ ...s, isCopy: false, file: '/a/x.wav' })) as never)
+    await deleteImport(host, imports[0]!.id)
+    expect(host.runs.some(r => r.argv[0] === 'rm' || r.argv[0] === 'powershell.exe')).toBe(false)
+  })
+  test('a rejection settles; no home folder is an error', async () => {
+    const host = fakeHost({ run: mac, files: { '/a/x.wav': { base64: EMPTY_WAV } } })
+    host.storeSet = async () => Promise.reject(new Error('disk'))
+    expect(await importSound(host, '/a/x.wav')).toEqual({ ok: false, error: 'Could not import that file.' })
+    expect(await deleteImport(host, 'user:nope')).toBe(false)
+    const homeless = fakeHost({ env: { HOME: '' }, run: mac, files: { '/a/x.wav': { base64: EMPTY_WAV } } })
+    expect(await importSound(homeless, '/a/x.wav')).toEqual({ ok: false, error: 'Could not find your home folder.' })
+  })
+  test('deleting resets settings before removing the entry', async () => {
+    const host = fakeHost({ run: mac, files: { '/a/x.wav': { base64: EMPTY_WAV } } })
+    await importSound(host, '/a/x.wav')
+    const order: string[] = []
+    const set = host.storeSet
+    host.storeSet = async (k, v) => (order.push(k), set(k, v))
+    await deleteImport(host, 'user:x')
+    expect(order).toEqual(['settings', 'imports'])
+  })
+})

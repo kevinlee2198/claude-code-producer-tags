@@ -2,6 +2,7 @@ import type { AudioExt, ImportedSound, OsName, Platform, Settings, SoundId } fro
 import { decodeBase64 } from './codec'
 import { FALLBACK_SOUND, MAX_IMPORT_BYTES, TRIGGERS } from './constants'
 import type { Host } from './host'
+import { logError } from './notify'
 import { allowedExts, basename, extOf, parseWav, slugify } from './library'
 import { detectPlatform } from './platform'
 import { changeImports, changeSettings, ensureLoaded } from './settings'
@@ -12,12 +13,16 @@ export type ImportResult =
 
 export const COPY_WARNING = 'Could not copy the file, so it is used from where it is; moving it will break this tag.'
 
+function isDrivePath(path: string): boolean {
+  return /^[A-Za-z]:[\\/]/.test(path)
+}
+
 /** What a terminal pastes for a dropped file: maybe quoted, maybe with backslash-escaped spaces. */
 export function cleanPastedPath(raw: string, os: OsName): string {
   let path = raw.trim()
   const first = path[0]
   if (path.length >= 2 && (first === "'" || first === '"') && path.endsWith(first)) path = path.slice(1, -1)
-  if (os !== 'windows') path = path.replace(/\\([ '"()&[\]])/g, '$1')
+  if (!isDrivePath(path)) path = path.replace(/\\(.)/g, '$1')
   return path
 }
 
@@ -82,19 +87,33 @@ export function resetSound(settings: Settings, id: SoundId): Settings {
   }
 }
 
-async function home(host: Host, platform: Platform): Promise<string> {
-  return (platform.os === 'windows' ? await host.env.userProfile() : await host.env.home()) ?? '.'
+/** The home folder, or null when the environment has none (an empty value counts as unset). */
+async function home(host: Host, platform: Platform): Promise<string | null> {
+  const value = platform.os === 'windows' ? await host.env.userProfile() : await host.env.home()
+  return value === undefined || value === '' ? null : value
 }
 
 /** A pasted path cleaned, `~` expanded, and on WSL a `C:\` path converted with `wslpath -u`. */
 export async function expandPath(host: Host, raw: string, platform: Platform): Promise<string> {
-  const path = expandHome(cleanPastedPath(raw, platform.os), await home(host, platform))
+  const path = expandHome(cleanPastedPath(raw, platform.os), (await home(host, platform)) ?? '')
   if (!isWindowsPathOnWsl(platform.os, path)) return path
   const converted = await host.run(['wslpath', '-u', path]).catch(() => null)
   return converted?.exitCode === 0 ? converted.stdout.trim() : path
 }
 
-export async function importSound(host: Host, rawPath: string): Promise<ImportResult> {
+let importQueue: Promise<unknown> = Promise.resolve()
+
+/** One import at a time, so each slug is chosen after the previous import is recorded. */
+export function importSound(host: Host, rawPath: string): Promise<ImportResult> {
+  const run = importQueue.then(() => importOne(host, rawPath)).catch((error): ImportResult => {
+    logError(host, 'importSound', error)
+    return { ok: false, error: 'Could not import that file.' }
+  })
+  importQueue = run
+  return run
+}
+
+async function importOne(host: Host, rawPath: string): Promise<ImportResult> {
   const platform = await detectPlatform(host)
   const path = await expandPath(host, rawPath, platform)
   const stat = path === '' ? null : await host.stat(path).catch(() => null)
@@ -102,8 +121,11 @@ export async function importSound(host: Host, rawPath: string): Promise<ImportRe
   const problem = importProblem(path, stat, ext, allowedExts(platform.os, platform.player))
   if (problem !== null || stat === null || ext === null) return { ok: false, error: problem ?? `No file at ${path}.` }
 
+  const homeDir = await home(host, platform)
+  if (homeDir === null) return { ok: false, error: 'Could not find your home folder.' }
   const { imports } = await ensureLoaded(host)
-  const { dir, sep } = soundsDirOf(platform.os, await host.env.configDir(), await home(host, platform))
+  const configDir = await host.env.configDir()
+  const { dir, sep } = soundsDirOf(platform.os, configDir === '' ? undefined : configDir, homeDir)
   const onDisk = (await host.list(dir).catch(() => [])).map(entry => stripExt(entry.name))
   const name = basename(path)
   const slug = slugify(name, new Set([...imports.map(sound => sound.id.slice('user:'.length)), ...onDisk]))
@@ -127,20 +149,41 @@ export async function importSound(host: Host, rawPath: string): Promise<ImportRe
     peaks: info?.peaks ?? null,
     isCopy,
   }
-  await changeImports(host, list => [...list, sound])
+  let isDuplicate = false
+  await changeImports(host, list => {
+    isDuplicate = list.some(s => s.id === sound.id)
+    return isDuplicate ? list : [...list, sound]
+  })
+  if (isDuplicate) return { ok: false, error: 'Could not import that file.' }
   return { ok: true, sound, warning: isCopy ? null : COPY_WARNING }
+}
+
+/** Whether `file` lies inside `dir` (separator-aware prefix check). */
+function isInside(file: string, dir: string, sep: string): boolean {
+  return file.startsWith(dir + sep) && !file.slice(dir.length + 1).split(/[\\/]/).includes('..')
 }
 
 /** Removes the import, its copy on disk (never the original), and every use of it (spec §7.2). */
 export async function deleteImport(host: Host, id: SoundId): Promise<boolean> {
-  const { imports } = await ensureLoaded(host)
-  const sound = imports.find(s => s.id === id)
-  if (sound === undefined) return false
-  if (sound.isCopy) {
-    const remove = deleteCommand((await detectPlatform(host)).os, sound.file)
-    await host.run(remove.argv, remove.env === undefined ? undefined : { env: remove.env }).catch(() => null)
+  try {
+    const { imports } = await ensureLoaded(host)
+    const sound = imports.find(s => s.id === id)
+    if (sound === undefined) return false
+    if (sound.isCopy) {
+      const platform = await detectPlatform(host)
+      const homeDir = await home(host, platform)
+      const configDir = await host.env.configDir()
+      const { dir, sep } = soundsDirOf(platform.os, configDir === '' ? undefined : configDir, homeDir ?? '')
+      if (isInside(sound.file, dir, sep)) {
+        const remove = deleteCommand(platform.os, sound.file)
+        await host.run(remove.argv, remove.env === undefined ? undefined : { env: remove.env }).catch(() => null)
+      }
+    }
+    await changeSettings(host, settings => resetSound(settings, id))
+    await changeImports(host, list => list.filter(s => s.id !== id))
+    return true
+  } catch (error) {
+    logError(host, 'deleteImport', error)
+    return false
   }
-  await changeImports(host, list => list.filter(s => s.id !== id))
-  await changeSettings(host, settings => resetSound(settings, id))
-  return true
 }
