@@ -39,6 +39,7 @@ export type View = {
   preview: { soundId: SoundId; progress: number } | null
   isWide: boolean
   hasVolume: boolean
+  fader: JSX.Element | null
 }
 
 const change = (v: View, where: string, fn: (s: Settings) => Settings) => () => act(v.host, where, () => changeSettings(v.host, fn))
@@ -51,6 +52,7 @@ function header(v: View): JSX.Element {
       {v.hasVolume && <Button key="vol-down" label="−" onPress={change(v, 'volume', s => stepVolume(s, -10))} />}
       {v.hasVolume && <Text>{v.settings.volume}%</Text>}
       {v.hasVolume && <Button key="vol-up" label="+" onPress={change(v, 'volume', s => stepVolume(s, 10))} />}
+      {v.fader}
       <Button key="mute" label={v.settings.muted ? 'Unmute' : 'Mute'} onPress={() => act(v.host, 'mute', () => toggleMute(v.host))} />
     </Box>
   )

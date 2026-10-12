@@ -8,11 +8,12 @@ import { resolveSound, soundOptions } from './library'
 import type { ResolvedSound } from './library'
 import { act, logError } from './notify'
 import { fireDetached, firePreview, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
-import { ensureLoaded, loadFromStore } from './settings'
+import { changeSettings, ensureLoaded, loadFromStore } from './settings'
 import { isOnStage } from './stage'
 import { EMPTY_DRAFT, NO_WORD } from './state'
 import { bashFacts, hitFor, modelTrigger, pickBashHit, sessionCloseTrigger, sessionOpenTrigger, turnDoneTrigger } from './triggers'
 import { mobilePaneView, paneView } from './ui/pane'
+import { setVolume } from './ui/pane-actions'
 import { progressOf } from './ui/visual'
 import { badgeView } from './ui/badges'
 import { bandView } from './ui/band'
@@ -255,6 +256,12 @@ export const register: Register = on => {
       const now = await $.clock.now()
       const previewing = np !== null && np.key === 'preview' && isOnStage(np, now)
       if (previewing) await read($, bandFrameAtom)
+      const hasVolume = !((platform?.os === 'windows' || platform?.os === 'wsl') && WINDOWS_ENGINE === 'soundplayer')
+      let fader: JSX.Element | null = null
+      if (hasVolume && (e.surface === 'terminal' || e.surface === 'desktop')) {
+        const { Client } = $.ui.resolve(e)
+        fader = <Client key="fader" module="./ui/fader.client.tsx" props={{ volume: settings.volume }} width={24} height={1} />
+      }
       return paneView({
         host: engine,
         els: { Box, Button, Input, Select, Text },
@@ -264,12 +271,29 @@ export const register: Register = on => {
         options: soundOptions(imports),
         preview: previewing ? { soundId: np.soundId, progress: progressOf(np, now) } : null,
         isWide: e.props.bodyColumns >= 80,
-        hasVolume: !((platform?.os === 'windows' || platform?.os === 'wsl') && WINDOWS_ENGINE === 'soundplayer'),
+        hasVolume,
+        fader,
       })
     } catch (error) {
       logError(engine, 'pane', error)
       const { Text } = $.ui.resolve(e)
       return <Text color="error">Producer Tags could not draw this pane.</Text>
     }
+  })
+
+  // The fader's posts: live values while dragging (state only), then a final one that is saved.
+  on('ui.message', async ($, e, next) => {
+    if (e.requestId !== PANE_ID || e.element !== 'fader') return next(e)
+    const engine = host ?? hostOf($)
+    try {
+      const data = e.data as { volume?: unknown; isFinal?: unknown }
+      if (typeof data.volume === 'number') {
+        const volume = data.volume
+        await changeSettings(engine, s => setVolume(s, volume), { persist: data.isFinal === true })
+      }
+    } catch (error) {
+      logError(engine, 'fader', error)
+    }
+    return {}
   })
 }
