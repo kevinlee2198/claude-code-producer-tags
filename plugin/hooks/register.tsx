@@ -171,10 +171,10 @@ export const register: Register = on => {
     try {
       const np = await read($, nowPlayingAtom)
       const settings = await read($, settingsAtom)
-      const frame = await read($, bandFrameAtom)
-      const word = await read($, captionWordAtom)
       const now = await $.clock.now()
-      if (np !== null && isOnStage(np, now) && settings?.studio.band !== false && !e.props.hasSurvey) show = { np, now, frame, word }
+      if (np !== null && isOnStage(np, now) && settings?.studio.band !== false && !e.props.hasSurvey) {
+        show = { np, now, frame: await read($, bandFrameAtom), word: await read($, captionWordAtom) }
+      }
     } catch (error) {
       logError(host ?? hostOf($), 'band', error)
     }

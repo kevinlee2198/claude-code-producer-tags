@@ -322,6 +322,14 @@ describe('fire, races between claim and play', () => {
     expect((await host.state.cooldowns.read())['git.commit']).toBeUndefined()
   })
 
+  test('a clip that fails to start starts no cooldown', async () => {
+    const { host } = slowRig()
+    await host.storeSet('imports', [{ id: 'user:mine', name: 'mine', file: '/x/mine.mp3', ext: 'mp3', bytes: 3, durationMs: null, peaks: null, isCopy: true }])
+    host.exists = async () => true // listed but unreadable: readBytes rejects, so the clip never starts
+    expect(await fire(host, { key: 'git.commit', sound: 'user:mine' }, 'tu1')).toBe(false)
+    expect((await host.state.cooldowns.read())['git.commit']).toBeUndefined()
+  })
+
   test('two tags claimed together interleave at the claim: exactly one plays', async () => {
     const { host, plays } = slowRig()
     const slowRead = host.state.settings.read

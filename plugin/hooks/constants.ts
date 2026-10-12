@@ -41,4 +41,5 @@ export const END_TAIL_MS = 1_000
 export const FRAME_MS = 100
 export const MAX_CUSTOM = 20
 export const MAX_PATTERN_LENGTH = 200
+export const MAX_MATCH_INPUT = 2048
 export const MAX_IMPORT_BYTES = 4 * 1024 * 1024

@@ -1,7 +1,7 @@
 import { describe, expect, test } from 'claude-code/testing'
 
 import { CATALOG } from '../hooks/catalog'
-import { changeSettings, defaultSettings, ensureLoaded, knownSounds, loadFromStore, normalizeImports, normalizeSettings, validatePattern } from '../hooks/settings'
+import { changeSettings, compilePattern, defaultSettings, ensureLoaded, knownSounds, loadFromStore, normalizeImports, normalizeSettings, validatePattern } from '../hooks/settings'
 import { fakeHost } from './fake-host'
 import { START, world } from './world'
 
@@ -47,6 +47,10 @@ describe('normalizeSettings', () => {
     const raw = { custom: [{ id: 'b', pattern: '(unclosed', outcome: 'success', sound: 'pt:riser', enabled: true }] }
     expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
   })
+  test('a stored hang-prone pattern loads invalid and disabled', () => {
+    const raw = { custom: [{ id: 'h', pattern: '(.*)*x', outcome: 'any', sound: 'pt:riser', enabled: true }] }
+    expect(normalizeSettings(raw, known).settings.custom[0]).toMatchObject({ enabled: false, isInvalid: true })
+  })
   test('settings from a newer release keep every field this release understands', () => {
     const raw = { version: 2, muted: true, volume: 30, futureThing: { x: 1 }, triggers: { 'git.push': { enabled: false, sound: 'pt:riser', color: 'red' } } }
     const { settings, isCorrupt } = normalizeSettings(raw, known)
@@ -69,6 +73,12 @@ describe('normalizeImports and validatePattern', () => {
     expect(validatePattern('x'.repeat(201))).toBe('Patterns are at most 200 characters.')
     expect(validatePattern('(')).toBe('That is not a valid regular expression.')
     expect(validatePattern('docker compose up')).toBeNull()
+  })
+  test('hang-prone patterns are rejected, ordinary ones pass', () => {
+    const hang = 'That pattern can hang; avoid nested repeats like (a+)+.'
+    for (const pattern of ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$']) expect(validatePattern(pattern)).toBe(hang)
+    for (const pattern of ['docker compose up', 'npm (run )?build', '^deploy\\b', '(git|hg) push', 'a+b*']) expect(validatePattern(pattern)).toBeNull()
+    expect(compilePattern('(.*)*x')).toBeNull()
   })
   test('known sounds are the catalog plus imports', () => {
     const ids = knownSounds([{ id: 'user:mine', name: 'mine', file: '/x', ext: 'wav', bytes: 1, durationMs: null, peaks: null, isCopy: true }])

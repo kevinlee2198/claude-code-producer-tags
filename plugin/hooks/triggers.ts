@@ -1,5 +1,5 @@
 import type { CustomTrigger, Settings, SoundId, TriggerId, TriggerKey } from '../types'
-import { BASH_PRIORITY } from './constants'
+import { BASH_PRIORITY, MAX_MATCH_INPUT } from './constants'
 import { compilePattern } from './settings'
 import { commandSegments, startsWithTokens, stripHeredocs, type Segment } from './shell'
 
@@ -142,11 +142,18 @@ export function bashCandidates(facts: BashFacts): TriggerId[] {
   return ids
 }
 
+const compiled = new Map<string, RegExp | null>()
+
+function cachedPattern(pattern: string): RegExp | null {
+  if (!compiled.has(pattern)) compiled.set(pattern, compilePattern(pattern))
+  return compiled.get(pattern) ?? null
+}
+
 export function customMatches(trigger: CustomTrigger, facts: BashFacts): boolean {
   if (!trigger.enabled || trigger.isInvalid) return false
   if (trigger.outcome === 'success' && facts.isError) return false
   if (trigger.outcome === 'fail' && !facts.isError) return false
-  return compilePattern(trigger.pattern)?.test(stripHeredocs(facts.command)) ?? false
+  return cachedPattern(trigger.pattern)?.test(stripHeredocs(facts.command).slice(0, MAX_MATCH_INPUT)) ?? false
 }
 
 export function pickBashHit(settings: Settings, facts: BashFacts | null): Hit | null {

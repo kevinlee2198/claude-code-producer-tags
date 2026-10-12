@@ -1,5 +1,6 @@
 import { describe, expect, test } from 'claude-code/testing'
 
+import { MAX_MATCH_INPUT } from '../hooks/constants'
 import { defaultSettings } from '../hooks/settings'
 import {
   bashFacts,
@@ -168,6 +169,17 @@ describe('command.fail and custom triggers', () => {
     expect(pickBashHit(s, facts("git commit -m \"$(cat <<'EOF'\ndeploy fix\nEOF\n)\""))).toBeNull()
     s.custom = [custom({ pattern: '(', isInvalid: true })]
     expect(pickBashHit(s, facts('('))).toBeNull()
+  })
+  test('custom patterns only see the first MAX_MATCH_INPUT characters', () => {
+    const s = allOn()
+    s.custom = [{ id: 'c1', pattern: 'needle', outcome: 'any', sound: 'pt:808-boom', enabled: true, isInvalid: false }]
+    const late = `echo ${'x'.repeat(10_000)} needle`
+    const early = `echo needle ${'x'.repeat(10_000)}`
+    const start = Date.now()
+    expect(pickBashHit(s, facts(late))).toBeNull()
+    expect(pickBashHit(s, facts(early))?.key).toBe('custom:c1')
+    expect(Date.now() - start).toBeLessThan(500)
+    expect(MAX_MATCH_INPUT).toBe(2048)
   })
 })
 

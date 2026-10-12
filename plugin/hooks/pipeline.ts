@@ -71,13 +71,13 @@ export async function fire(host: Host, hit: Hit, toolUseId: string | null = null
   stopCurrent()
   const handle = play(host, platform, { sound, gain: settings.volume / 100, maxMs: MAX_CLIP_MS })
   current = { token, handle }
-  if (!isPreview) await host.state.cooldowns.update(cooldowns => ({ ...cooldowns, [hit.key]: now }))
   if (!(await handle.started)) {
     // Stopped during startup (a preview or /mute): clear quietly, it is not a failure.
     if ((await handle.ended) === 'stopped') await updateIfMine(host, token, () => null)
     else await failPlayback(host, token, null)
     return false
   }
+  if (!isPreview) await host.state.cooldowns.update(cooldowns => ({ ...cooldowns, [hit.key]: now }))
   const startedAt = await host.now()
   const started = await updateIfMine(host, token, np => startedEntry(np, startedAt))
   if (started?.token === token) {
