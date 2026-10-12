@@ -3,3 +3,4 @@ node_modules/
 plugin/.claude-plugin/types/
 __pycache__/
 *.pyc
+plugin/tsconfig.json
