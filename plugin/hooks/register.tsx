@@ -5,8 +5,11 @@ import type { Host } from './host'
 import { act, logError } from './notify'
 import { fireDetached, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
 import { ensureLoaded, loadFromStore } from './settings'
+import { isOnStage } from './stage'
 import { EMPTY_DRAFT, NO_WORD } from './state'
 import { bashFacts, hitFor, modelTrigger, pickBashHit, sessionCloseTrigger, sessionOpenTrigger, turnDoneTrigger } from './triggers'
+import { bandView } from './ui/band'
+import { modesWith } from './ui/mode'
 
 // The atoms of every `$.state` value (spec §9.2). They are declared here, in the one file that
 // reads and writes them: the engine takes an atom only from a const of the calling file.
@@ -148,4 +151,26 @@ export const register: Register = on => {
     return muteAnswer(host ?? hostOf($))
   })
   on('command.run', { command: 'tags-mute' }, async $ => muteAnswer(host ?? hostOf($)))
+
+  on('ui.render', { component: 'AbovePrompt' }, async ($, e, next) => {
+    try {
+      const np = await read($, nowPlayingAtom)
+      const settings = await read($, settingsAtom)
+      const frame = await read($, bandFrameAtom)
+      const word = await read($, captionWordAtom)
+      const now = await $.clock.now()
+      if (np === null || !isOnStage(np, now) || settings?.studio.band === false || e.props.hasSurvey) return next(e)
+      const { Box, Text } = $.ui.resolve(e)
+      return bandView({ Box, Text }, np, now, frame, word, await next(e))
+    } catch (error) {
+      logError(host ?? hostOf($), 'band', error)
+      return next(e)
+    }
+  })
+
+  on('ui.render', { component: 'SessionMode' }, async ($, e, next) => {
+    const settings = await read($, settingsAtom).catch(() => null)
+    if (settings === null) return next(e)
+    return next({ ...e, props: { ...e.props, modes: modesWith(e.props.modes, settings) } })
+  })
 }

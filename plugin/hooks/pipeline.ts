@@ -8,6 +8,7 @@ import { play, playDetached, type PlayEnd, type PlayHandle } from './player'
 import { changeSettings, ensureLoaded } from './settings'
 import { claimFor, clearAtOf, defaultSoundFor, isCoolingDown, isLive, startedEntry } from './stage'
 import type { Hit } from './triggers'
+import { startAnimation } from './ui/animate'
 
 /** The clip this module started; a reloaded module starts with none (recoverStage). */
 let current: { token: string; handle: PlayHandle } | null = null
@@ -79,7 +80,10 @@ export async function fire(host: Host, hit: Hit, toolUseId: string | null = null
   }
   const startedAt = await host.now()
   const started = await updateIfMine(host, token, np => startedEntry(np, startedAt))
-  if (started?.token === token) await setTag(host, toolUseId, sound.id)
+  if (started?.token === token) {
+    await setTag(host, toolUseId, sound.id)
+    startAnimation(host, token)
+  }
   handle.ended.then(
     result => act(host, 'finish', () => finish(host, token, toolUseId, result)),
     error => logError(host, 'finish', error),
