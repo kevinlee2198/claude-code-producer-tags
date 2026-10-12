@@ -204,8 +204,12 @@ function playSilently(host: Host, ms: number): PlayHandle {
   }
 }
 
+async function existingWslEnv(host: Host, platform: Platform): Promise<string | undefined> {
+  return platform.os === 'wsl' ? host.env.wslEnv() : undefined
+}
+
 async function powershellEnv(host: Host, platform: Platform, request: PlayRequest): Promise<Record<string, string>> {
-  const existing = platform.os === 'wsl' ? await host.env.wslEnv() : undefined
+  const existing = await existingWslEnv(host, platform)
   return windowsEnv(platform.os, filePathOf(host.root, request.sound), request.gain, request.sound.durationMs, request.maxMs, existing)
 }
 
@@ -266,7 +270,7 @@ function playProcess(host: Host, argv: string[], env: Record<string, string>, ma
 
 /** Fire-and-forget playback that survives the session ending (spec §6.3). */
 export async function playDetached(host: Host, platform: Platform, request: PlayRequest): Promise<void> {
-  const existing = platform.os === 'wsl' ? await host.env.wslEnv() : undefined
+  const existing = await existingWslEnv(host, platform)
   const launch = detachedLaunch(platform, filePathOf(host.root, request.sound), request, existing)
   if (launch !== null) await host.run(launch.argv, { env: launch.env })
 }
