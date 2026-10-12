@@ -6,6 +6,7 @@ import {
   copyCommand,
   deleteCommand,
   deleteImport,
+  expandPath,
   expandHome,
   importProblem,
   importSound,
@@ -161,5 +162,15 @@ describe('fix round 1', () => {
     host.storeSet = async (k, v) => (order.push(k), set(k, v))
     await deleteImport(host, 'user:x')
     expect(order).toEqual(['settings', 'imports'])
+  })
+})
+
+describe('fix round 2', () => {
+  test('UNC and ~\\ paths keep their backslashes', async () => {
+    expect(cleanPastedPath('\\\\server\\share\\kick.wav', 'windows')).toBe('\\\\server\\share\\kick.wav')
+    expect(cleanPastedPath('\\\\server\\share\\kick.wav', 'wsl')).toBe('\\\\server\\share\\kick.wav')
+    expect(cleanPastedPath('~\\Music\\x.wav', 'windows')).toBe('~\\Music\\x.wav')
+    const host = fakeHost({ env: { OS: 'Windows_NT', USERPROFILE: 'C:\\Users\\dev' } })
+    expect(await expandPath(host, '~\\Music\\x.wav', { os: 'windows', player: 'powershell' })).toBe('C:\\Users\\dev\\Music\\x.wav')
   })
 })

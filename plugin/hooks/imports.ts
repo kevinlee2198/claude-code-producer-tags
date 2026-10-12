@@ -22,7 +22,7 @@ export function cleanPastedPath(raw: string, os: OsName): string {
   let path = raw.trim()
   const first = path[0]
   if (path.length >= 2 && (first === "'" || first === '"') && path.endsWith(first)) path = path.slice(1, -1)
-  if (!isDrivePath(path)) path = path.replace(/\\(.)/g, '$1')
+  if (os !== 'windows' && !isDrivePath(path) && !path.startsWith('\\\\')) path = path.replace(/\\(.)/g, '$1')
   return path
 }
 
