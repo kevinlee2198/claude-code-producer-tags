@@ -5064,9 +5064,12 @@ async function frame(host: Host, token: string): Promise<void> {
 import { startAnimation } from './ui/animate'
 ```
 
-**Edit 2.** In `plugin/hooks/pipeline.ts`, after the line `await setTag(host, toolUseId, sound.id)`, add:
+**Edit 2.** In `plugin/hooks/pipeline.ts`, replace the line `if (started?.token === token) await setTag(host, toolUseId, sound.id)` with the block below. The animation starts only while this clip still owns the stage: `startAnimation` first stops the running loop, so starting it for a clip that lost its claim would freeze the winner's band.
 ```ts
-  startAnimation(host, token)
+  if (started?.token === token) {
+    await setTag(host, toolUseId, sound.id)
+    startAnimation(host, token)
+  }
 ```
 
 - [ ] **Step 4: Implement the band and mode views**
@@ -5894,9 +5897,13 @@ import { resolveSound, soundOptions } from './library'
   let isLoading = false
 ```
 
-**Edit 4.** In `plugin/hooks/register.tsx`, after the line `await recoverStage(engine)`, add:
+**Edit 4.** In `plugin/hooks/register.tsx`, `session.start` runs each step in its own `try` block, so one failing step can't skip the others. Directly above the block that starts `try {` and contains `muteCommand = await registerMute(engine)`, add a block of its own:
 ```tsx
+    try {
       await engine.registerCommand({ name: 'tags', description: 'Open the Producer Tags pane' })
+    } catch (error) {
+      logError(engine, 'session.start', error)
+    }
 ```
 
 **Edit 5.** In `plugin/hooks/register.tsx`, directly above the file's last line (`}`), add:
