@@ -2,9 +2,11 @@ import { atom, memberOf, read, update } from 'claude-code'
 import type { EngineInterface, Register } from 'claude-code'
 
 import type { Host } from './host'
-import { logError } from './notify'
-import { loadFromStore } from './settings'
+import { act, logError } from './notify'
+import { fireDetached, muteAnswer, recoverStage, registerMute, schedule } from './pipeline'
+import { ensureLoaded, loadFromStore } from './settings'
 import { EMPTY_DRAFT, NO_WORD } from './state'
+import { bashFacts, hitFor, modelTrigger, pickBashHit, sessionCloseTrigger, sessionOpenTrigger, turnDoneTrigger } from './triggers'
 
 // The atoms of every `$.state` value (spec §9.2). They are declared here, in the one file that
 // reads and writes them: the engine takes an atom only from a const of the calling file.
@@ -72,6 +74,7 @@ export const register: Register = on => {
    * until `session.start` runs again and rebinds it).
    */
   let host: Host | null = null
+  let muteCommand: 'mute' | 'tags-mute' = 'mute'
 
   // One session.start hook per plugin: every load-time step of the mod is here.
   on('session.start', async ($, e, next) => {
@@ -79,9 +82,47 @@ export const register: Register = on => {
     host = engine
     try {
       await loadFromStore(engine)
+      await recoverStage(engine)
+      muteCommand = await registerMute(engine)
     } catch (error) {
       logError(engine, 'session.start', error)
     }
     return next(e)
   })
+
+  on('tool.call', { tool: 'Bash' }, async ($, e, next) => {
+    const ran = await next(e)
+    if (next.origin.plugin === 'engine') {
+      const input = { command: e.command, run_in_background: e.run_in_background, isAborted: next.signal.aborted }
+      schedule(host ?? hostOf($), settings => pickBashHit(settings, bashFacts(input, ran)), e.tool_use_id)
+    }
+    return ran
+  }).catch(($, e, next) => next(e))
+
+  on('classic.PostModelSwitch', ($, e, next) => {
+    schedule(host ?? hostOf($), settings => hitFor(settings, modelTrigger(e)))
+    return next(e)
+  })
+  on('classic.SessionStart', ($, e, next) => {
+    schedule(host ?? hostOf($), settings => hitFor(settings, sessionOpenTrigger(e.source)))
+    return next(e)
+  })
+  on('classic.Stop', ($, e, next) => {
+    schedule(host ?? hostOf($), settings => hitFor(settings, turnDoneTrigger(e.stop_hook_active === true)))
+    return next(e)
+  })
+
+  // The outro is launched, not awaited: session.end has one short budget for every hook (spec
+  // §6.3). It binds this hook's own `$`, so the launch belongs to the session.end dispatch.
+  on('session.end', ($, e, next) => {
+    const engine = hostOf($)
+    act(engine, 'session.end', async () => {
+      const hit = hitFor((await ensureLoaded(engine)).settings, sessionCloseTrigger(e.reason))
+      if (hit !== null) await fireDetached(engine, hit)
+    })
+    return next(e)
+  })
+
+  on('command.run', { command: 'mute' }, async ($, e, next) => (muteCommand === 'mute' ? muteAnswer(host ?? hostOf($)) : next(e)))
+  on('command.run', { command: 'tags-mute' }, async $ => muteAnswer(host ?? hostOf($)))
 }
