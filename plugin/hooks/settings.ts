@@ -12,21 +12,21 @@ export function defaultSettings(): Settings {
 
 /**
  * Whether a quantifier starts at `at`. A quantifier is unbounded for `+`, `*` and `{n,}`, and a
- * repeat for those plus `{n,m}` with m above 1; `?` and `{n}` count as neither.
+ * repeat for those plus `{n,m}` with m above 1; `?` and `{n}` count as neither. It is large when
+ * it is unbounded or `{n,m}` with m above 3, enough to blow up a group that already repeats.
  */
-function quantifierAt(pattern: string, at: number): { isUnbounded: boolean; isRepeat: boolean } {
+function quantifierAt(pattern: string, at: number): { isUnbounded: boolean; isRepeat: boolean; isLarge: boolean } {
   const c = pattern[at]
-  if (c === '+' || c === '*') return { isUnbounded: true, isRepeat: true }
-  if (c !== '{') return { isUnbounded: false, isRepeat: false }
-  const braces = /^\{\d+,(\d*)\}/.exec(pattern.slice(at))
-  if (braces === null) return { isUnbounded: false, isRepeat: false }
+  if (c === '+' || c === '*') return { isUnbounded: true, isRepeat: true, isLarge: true }
+  const braces = c === '{' ? /^\{\d+,(\d*)\}/.exec(pattern.slice(at)) : null
+  if (braces === null) return { isUnbounded: false, isRepeat: false, isLarge: false }
   const isUnbounded = braces[1] === ''
-  return { isUnbounded, isRepeat: isUnbounded || Number(braces[1]) > 1 }
+  return { isUnbounded, isRepeat: isUnbounded || Number(braces[1]) > 1, isLarge: isUnbounded || Number(braces[1]) > 3 }
 }
 
 /**
  * A heuristic for patterns that can backtrack catastrophically: a group holding a repeat or an
- * alternation (at any depth) that is itself repeated without bound, like (a+)+, (.*)*x, (a|aa)+
+ * alternation (at any depth) that is itself repeated without bound or many times, like (a+)+, (.*)*x, (a|aa)+
  * or ((a|aa))+. It cannot see polynomial blowup such as .*.*.*x.
  */
 function canHang(pattern: string): boolean {
@@ -49,7 +49,7 @@ function canHang(pattern: string): boolean {
       const closed = groups.pop()!
       const parent = groups[groups.length - 1]!
       const quantifier = quantifierAt(pattern, i + 1)
-      if (quantifier.isUnbounded && (closed.hasRepeat || closed.hasAlternation)) return true
+      if (quantifier.isLarge && (closed.hasRepeat || closed.hasAlternation)) return true
       if (closed.hasRepeat || quantifier.isRepeat) parent.hasRepeat = true
       if (closed.hasAlternation) parent.hasAlternation = true
     } else if (quantifierAt(pattern, i).isRepeat) {

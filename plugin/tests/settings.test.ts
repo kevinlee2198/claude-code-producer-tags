@@ -78,9 +78,10 @@ describe('normalizeImports and validatePattern', () => {
   })
   test('hang-prone patterns are rejected, ordinary ones pass', () => {
     const hang = 'That pattern can hang; avoid repeating a group that holds a repeat or |, like (a+)+ or (a|b)+.'
-    const hanging = ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$', '((a|aa))+$', '(?:(a|aa))+$', '(a{1,5})+$', '(a{2,})+']
+    // ((a|b)c)+ is a conservative false positive: it is safe, but the scan can't tell it from ((a|aa))+.
+    const hanging = ['(a+)+$', '(.*)*x', '(a|aa)+$', '(\\w+\\s?)*$', '((a|aa))+$', '(?:(a|aa))+$', '(a{1,5})+$', '(a{2,})+', '(a+){1,50}$', '(?:a+){1,99}$', '(a|aa){1,50}$', '(a{1,2}){1,50}$', '((a|b)c)+']
     for (const pattern of hanging) expect(validatePattern(pattern)).toBe(hang)
-    const fine = ['docker compose up', 'npm (run )?build', '^deploy\\b', '(git|hg) push', 'git (commit|push)', 'a+b*', '(ab){2}', 'a{1,5}', '(x)?y', '[(]+']
+    const fine = ['docker compose up', 'npm (run )?build', '^deploy\\b', '(git|hg) push', 'git (commit|push)', 'a+b*', '(ab){2}', 'a{1,5}', '(x)?y', '[(]+', '(a+){2}$', '(a+){1,3}', '(a+)?b']
     for (const pattern of fine) expect(validatePattern(pattern)).toBeNull()
     expect(compilePattern('(.*)*x')).toBeNull()
   })

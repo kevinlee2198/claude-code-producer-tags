@@ -97,7 +97,7 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
 - **Native Windows (not WSL):** untested. If Claude Code runs commands through a PowerShell tool there, Bash triggers may not fire.
 - **Band timing:** the band and captions are timed from when playback starts. On Windows and WSL, playback waits for the file to open, which can take up to about 1.5 s on a cold start, so the band appears a moment after the command finishes.
 - **Badge replay:** clicking the ▶ on a transcript badge needs Claude Code's fullscreen mode. The pane's ▶ works everywhere.
-- **Custom patterns:** a pattern with several unbounded wildcards in a row, like `.*.*.*`, can slow Claude Code on long commands. Keep patterns simple.
+- **Custom patterns:** a pattern with several unbounded wildcards in a row, like `.*.*.*`, or a group repeated many times that itself repeats (like `(a+){1,50}`), can slow Claude Code on long commands. Keep patterns simple.
 - **Several sessions:** with more than one Claude Code session open, the last settings change wins.
 
 ## Privacy
