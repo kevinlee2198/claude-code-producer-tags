@@ -6,7 +6,7 @@ import { CATALOG } from '../hooks/catalog'
 import { encodeUtf16LeBase64 } from '../hooks/codec'
 import { resolveSound } from '../hooks/library'
 import { fakeHost, type FakeHost } from './fake-host'
-import { LINUX_WRAPPER, DETACH_COMMAND, play, WINDOWS_SCRIPT, detachedLaunch, filePathOf, linuxPlayerArgv, startSignal, windowsEnv } from '../hooks/player'
+import { LINUX_WRAPPER, DETACH_COMMAND, WINDOWS_ARGV, play, WINDOWS_SCRIPT, detachedLaunch, filePathOf, linuxPlayerArgv, startSignal, windowsEnv } from '../hooks/player'
 
 describe('player argv and env', () => {
   test('linux players get their own volume flags', () => {
@@ -182,6 +182,50 @@ describe('play lifecycles', () => {
     expect(await run({ ...sound, durationMs: null }, false)).toBe('ok')
     expect(asked).toEqual([1234, 3000])
     expect(await run(sound, true)).toBe('stopped')
+  })
+  test('none: a long import is held no longer than maxMs', async () => {
+    const none = { os: 'linux', player: 'none' } as Platform
+    const asked: number[] = []
+    const { host } = scripted('none', { after: ((ms: number) => (asked.push(ms), { cancel: () => undefined })) as FakeHost['after'] })
+    play(host, none, { ...request, sound: { ...sound, durationMs: 60000 } })
+    expect(asked).toEqual([15000])
+  })
+  test('powershell: spawns the windows argv with the windows env; w lines are not started; ticks end ok', async () => {
+    const wsl = { os: 'wsl', player: 'powershell' } as Platform
+    const spawned: { argv: readonly string[]; env?: Record<string, string> }[] = []
+    const s = script()
+    const base = fakeHost({ env: { WSLENV: 'USERPROFILE/p' } })
+    const host = { ...base, spawn: (r: { argv: readonly string[]; env?: Record<string, string> }) => (spawned.push(r), s.spawn()) } as FakeHost
+    const handle = play(host, wsl, request)
+    s.push('w\n', 'w\n')
+    await tick()
+    let isStarted = false
+    void handle.started.then(v => (isStarted = v))
+    await tick()
+    expect(isStarted).toBe(false)
+    s.push('started\n', 't\n', 'end')
+    expect(await handle.started).toBe(true)
+    expect(await handle.ended).toBe('ok')
+    expect(spawned[0]!.argv).toEqual([...WINDOWS_ARGV])
+    expect(spawned[0]!.argv.slice(0, 5)).toEqual(['powershell.exe', '-NoProfile', '-NonInteractive', '-STA', '-EncodedCommand'])
+    expect(spawned[0]!.env).toMatchObject({ PT_GAIN: '0.80', PT_CAP: '15000', WSLENV: 'USERPROFILE/p:PT_FILE/p:PT_GAIN:PT_MS:PT_CAP' })
+  })
+  test('powershell: stop breaks on the next chunk without a kill', async () => {
+    const { host, s, platform } = scripted('powershell')
+    const handle = play(host, platform, request)
+    s.push('started\n')
+    expect(await handle.started).toBe(true)
+    handle.stop()
+    s.push('t\n')
+    expect(await handle.ended).toBe('stopped')
+    expect(killed(host)).toEqual([])
+  })
+  test('powershell: only w lines then exit is failed', async () => {
+    const { host, s, platform } = scripted('powershell')
+    const handle = play(host, platform, request)
+    s.push('w\n', 'w\n', 'end')
+    expect(await handle.started).toBe(false)
+    expect(await handle.ended).toBe('failed')
   })
   test('powershell: a failing WSLENV lookup is failed, not an unhandled rejection', async () => {
     const wsl = { os: 'wsl', player: 'powershell' } as Platform

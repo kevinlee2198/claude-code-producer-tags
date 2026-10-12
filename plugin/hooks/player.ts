@@ -8,7 +8,11 @@ export type PlayRequest = { sound: ResolvedSound; gain: number; maxMs: number }
 export type PlayEnd = 'ok' | 'stopped' | 'failed'
 export type PlayHandle = { started: Promise<boolean>; ended: Promise<PlayEnd>; stop: () => void }
 
-/** WPF MediaPlayer: wav and mp3 with volume. Data only from env; prints `started`, then `t` every 100 ms. */
+/**
+ * WPF MediaPlayer: wav and mp3 with volume. Data only from env. Open is async, so it prints `w` while
+ * waiting for the clip to open (exit 1 if it never does), then `started`, then `t` every 100 ms until
+ * the clip's natural end (PT_MS + 1 s is only a fallback end; PT_CAP is the hard cap).
+ */
 const MEDIAPLAYER_SCRIPT = [
   "$ErrorActionPreference = 'Stop'",
   "$ProgressPreference = 'SilentlyContinue'",
@@ -17,12 +21,18 @@ const MEDIAPLAYER_SCRIPT = [
   '$player.Open([Uri]::new($env:PT_FILE))',
   '$player.Volume = [double]$env:PT_GAIN',
   '$player.Play()',
+  '$wait = [Diagnostics.Stopwatch]::StartNew()',
+  'while (-not ($player.NaturalDuration.HasTimeSpan -or $player.Position.TotalMilliseconds -gt 0)) {',
+  '  if ($wait.ElapsedMilliseconds -ge 3000) { exit 1 }',
+  '  Start-Sleep -Milliseconds 100',
+  "  [Console]::Out.WriteLine('w'); [Console]::Out.Flush()",
+  '}',
   "[Console]::Out.WriteLine('started'); [Console]::Out.Flush()",
   '$limit = [int]$env:PT_MS',
   '$clock = [Diagnostics.Stopwatch]::StartNew()',
   'while ($clock.ElapsedMilliseconds -lt [int]$env:PT_CAP) {',
-  '  if ($limit -gt 0 -and $clock.ElapsedMilliseconds -ge $limit) { break }',
-  '  if ($limit -le 0 -and $player.NaturalDuration.HasTimeSpan -and $player.Position -ge $player.NaturalDuration.TimeSpan) { break }',
+  '  if ($player.NaturalDuration.HasTimeSpan -and $player.Position -ge $player.NaturalDuration.TimeSpan) { break }',
+  '  if ($limit -gt 0 -and $clock.ElapsedMilliseconds -ge $limit + 1000) { break }',
   '  Start-Sleep -Milliseconds 100',
   "  [Console]::Out.WriteLine('t'); [Console]::Out.Flush()",
   '}',
@@ -146,7 +156,7 @@ export function play(host: Host, platform: Platform, request: PlayRequest): Play
     case 'audio':
       return playWithEngine(host, request)
     case 'none':
-      return playSilently(host, request.sound.durationMs ?? 3000)
+      return playSilently(host, Math.min(request.sound.durationMs ?? 3000, request.maxMs))
     case 'powershell':
       return playPowerShell(host, platform, request)
     default: {

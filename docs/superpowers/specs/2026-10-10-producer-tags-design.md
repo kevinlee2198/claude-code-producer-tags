@@ -301,8 +301,8 @@ Every route reports `started` and `ended` back to the director.
 
 - Playback runs through `$.process.spawn` of `powershell.exe -NoProfile -NonInteractive -STA -EncodedCommand <constant script>`.
 - All data travels in environment variables: `PT_FILE`, `PT_GAIN`, `PT_MS`, `PT_CAP`. Nothing is interpolated into the script.
-- The script uses WPF `MediaPlayer`. It prints `started` after `Play()`, then `t` every 100 ms.
-- It ends after `PT_MS`. When `PT_MS` is `0` (an mp3 import, length unknown), it ends instead when `NaturalDuration` is reached. Either way it stops at `PT_CAP` (15 s).
+- The script uses WPF `MediaPlayer`. `Open` is asynchronous, so after `Play()` it polls every 100 ms (up to about 3 s) until `NaturalDuration` or `Position` shows the clip has opened, printing `w` each poll. If the clip never opens it exits 1 without printing `started`, which the director reports as `failed`. Only once open does it print `started`, then `t` every 100 ms.
+- It ends when `Position` reaches `NaturalDuration`, so the tail is never clipped. `PT_MS + 1000 ms` is only a fallback end if the length never becomes known, and it stops at `PT_CAP` (15 s) regardless. `w` lines mean "not started yet"; a stop still breaks the loop on the next line.
 - **Stopping:** the director sets an abort flag. On the next `t` tick, the stream loop breaks, which kills the child.
 
 **wsl**
