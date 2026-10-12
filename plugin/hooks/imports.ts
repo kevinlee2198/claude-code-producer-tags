@@ -11,6 +11,8 @@ export type ImportResult =
   | { ok: true; sound: ImportedSound; warning: string | null }
   | { ok: false; error: string }
 
+const IMPORT_FAILED = 'Could not import that file.'
+
 export const COPY_WARNING = 'Could not copy the file, so it is used from where it is; moving it will break this tag.'
 
 function isDrivePath(path: string): boolean {
@@ -33,7 +35,7 @@ export function expandHome(path: string, home: string): string {
 
 /** A `C:\…` path typed on WSL, which `wslpath -u` turns into `/mnt/c/…`. */
 export function isWindowsPathOnWsl(os: OsName, path: string): boolean {
-  return os === 'wsl' && /^[A-Za-z]:[\\/]/.test(path)
+  return os === 'wsl' && isDrivePath(path)
 }
 
 export function soundsDirOf(os: OsName, configDir: string | undefined, home: string): { dir: string; sep: '/' | '\\' } {
@@ -93,6 +95,12 @@ async function home(host: Host, platform: Platform): Promise<string | null> {
   return value === undefined || value === '' ? null : value
 }
 
+/** Where imported copies live; an empty CLAUDE config dir counts as unset. */
+async function soundsDir(host: Host, platform: Platform, homeDir: string): Promise<{ dir: string; sep: '/' | '\\' }> {
+  const configDir = await host.env.configDir()
+  return soundsDirOf(platform.os, configDir === '' ? undefined : configDir, homeDir)
+}
+
 /** A pasted path cleaned, `~` expanded, and on WSL a `C:\` path converted with `wslpath -u`. */
 export async function expandPath(host: Host, raw: string, platform: Platform): Promise<string> {
   const path = expandHome(cleanPastedPath(raw, platform.os), (await home(host, platform)) ?? '')
@@ -107,7 +115,7 @@ let importQueue: Promise<unknown> = Promise.resolve()
 export function importSound(host: Host, rawPath: string): Promise<ImportResult> {
   const run = importQueue.then(() => importOne(host, rawPath)).catch((error): ImportResult => {
     logError(host, 'importSound', error)
-    return { ok: false, error: 'Could not import that file.' }
+    return { ok: false, error: IMPORT_FAILED }
   })
   importQueue = run
   return run
@@ -124,8 +132,7 @@ async function importOne(host: Host, rawPath: string): Promise<ImportResult> {
   const homeDir = await home(host, platform)
   if (homeDir === null) return { ok: false, error: 'Could not find your home folder.' }
   const { imports } = await ensureLoaded(host)
-  const configDir = await host.env.configDir()
-  const { dir, sep } = soundsDirOf(platform.os, configDir === '' ? undefined : configDir, homeDir)
+  const { dir, sep } = await soundsDir(host, platform, homeDir)
   const onDisk = (await host.list(dir).catch(() => [])).map(entry => stripExt(entry.name))
   const name = basename(path)
   const slug = slugify(name, new Set([...imports.map(sound => sound.id.slice('user:'.length)), ...onDisk]))
@@ -154,7 +161,7 @@ async function importOne(host: Host, rawPath: string): Promise<ImportResult> {
     isDuplicate = list.some(s => s.id === sound.id)
     return isDuplicate ? list : [...list, sound]
   })
-  if (isDuplicate) return { ok: false, error: 'Could not import that file.' }
+  if (isDuplicate) return { ok: false, error: IMPORT_FAILED }
   return { ok: true, sound, warning: isCopy ? null : COPY_WARNING }
 }
 
@@ -172,8 +179,7 @@ export async function deleteImport(host: Host, id: SoundId): Promise<boolean> {
     if (sound.isCopy) {
       const platform = await detectPlatform(host)
       const homeDir = await home(host, platform)
-      const configDir = await host.env.configDir()
-      const { dir, sep } = soundsDirOf(platform.os, configDir === '' ? undefined : configDir, homeDir ?? '')
+      const { dir, sep } = await soundsDir(host, platform, homeDir ?? '')
       if (isInside(sound.file, dir, sep)) {
         const remove = deleteCommand(platform.os, sound.file)
         await host.run(remove.argv, remove.env === undefined ? undefined : { env: remove.env }).catch(() => null)

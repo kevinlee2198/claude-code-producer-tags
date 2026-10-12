@@ -109,8 +109,9 @@ function gitSubcommand(words: readonly string[]): { name: string; args: string[]
   return name === undefined ? null : { name, args: words.slice(i + 1) }
 }
 
-const hasFlag = (args: readonly string[], long: string, short: string): boolean =>
-  args.some(arg => arg === long || (/^-[a-zA-Z]+$/.test(arg) && arg.includes(short)))
+function hasFlag(args: readonly string[], long: string, short: string): boolean {
+  return args.some(arg => arg === long || (/^-[a-zA-Z]+$/.test(arg) && arg.includes(short)))
+}
 
 /**
  * The engine builds `gitOperation` from git's own output, which `-q` silences. Only for a quiet commit or push
@@ -125,10 +126,11 @@ function quietGitTriggers(facts: BashFacts): TriggerId[] {
     const sub = gitSubcommand(segment.words)
     if (sub === null || (sub.name !== 'commit' && sub.name !== 'push')) return
     if (!hasFlag(sub.args, '--quiet', 'q') || sub.args.includes('--dry-run') || !isAttributable(segments, index)) return
-    if (sub.name === 'push') {
-      if (hasFlag(sub.args, '--dry-run', 'n')) return
+    if (sub.name === 'commit') {
+      ids.push('git.commit')
+    } else if (!hasFlag(sub.args, '--dry-run', 'n')) {
       ids.push('git.push')
-    } else ids.push('git.commit')
+    }
   })
   return ids
 }
