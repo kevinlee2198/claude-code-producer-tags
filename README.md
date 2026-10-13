@@ -116,7 +116,14 @@ python3 -I tools/generate-tags/smoke_test.py
 
 - **Running from your checkout:** `claude --plugin-dir ./plugin`.
 
-**Regenerating the default tags.** Run `python3 -I tools/generate-tags/generate.py --voice sapi`, from Windows or WSL, or use `--voice say` on macOS. Use `--only <id>` for one tag. Edit lines in `tools/generate-tags/tags.json`. Then commit the WAVs and the regenerated `plugin/hooks/catalog.ts`.
+**Regenerating the default tags.** The voices are recorded outside the repo (currently with [Chatterbox](https://github.com/resemble-ai/chatterbox)) and kept as raw takes in `tools/generate-tags/takes/<id>.wav`. To change one:
+
+1. Put a 16-bit WAV of the new line at `tools/generate-tags/takes/<id>.wav`. Any sample rate works; convert with `ffmpeg -i in.mp3 -c:a pcm_s16le takes/<id>.wav`.
+2. Mix it: `pip install -r tools/generate-tags/requirements-mix.txt`, then `python3 -I tools/generate-tags/mix.py --only <id>`. The mix uses the tag's `preset` in `tags.json`.
+3. Rebuild the catalog: `python3 -I tools/generate-tags/generate.py --catalog-only`.
+4. Commit the take, the WAV in `plugin/sounds/` and `plugin/hooks/catalog.ts`.
+
+`generate.py` without `--catalog-only` re-renders everything with the old system-voice path (`--voice sapi` on Windows or WSL, `--voice say` on macOS), which overwrites the mixed tags.
 
 **Manual checklist before a release.** Do this on macOS and Linux; Windows is best-effort.
 - Each default-on trigger plays: commit, push, merge, tests (direct and `| tail`), each model switch, `/exit`.

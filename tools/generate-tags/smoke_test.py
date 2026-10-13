@@ -22,8 +22,8 @@ def main() -> int:
             problems.append(f'{sound_id}: missing {path}')
             continue
         with wave.open(str(path), 'rb') as w:
-            if (w.getnchannels(), w.getsampwidth(), w.getframerate()) != (1, 2, 22050):
-                problems.append(f'{sound_id}: not 22.05 kHz 16-bit mono')
+            if w.getsampwidth() != 2 or w.getnchannels() not in (1, 2) or w.getframerate() not in (22050, 44100):
+                problems.append(f'{sound_id}: not 16-bit mono or stereo at 22.05 or 44.1 kHz')
             ms = round(w.getnframes() * 1000 / w.getframerate())
         if ms >= 6000:
             problems.append(f'{sound_id}: {ms} ms is not under 6 s')

@@ -356,7 +356,7 @@ Whether a detached child survives exit has to be checked early (§14). If it doe
 
 Each entry: `{ id, file, caption, riff, durationMs, peaks: number[64], isVoice }`. The generator writes the file as a TS module, because a hooks module cannot import JSON.
 
-| ID | Caption (approved 2026-10-11 as v0.1 placeholders; better voices and lines are the next step after merge) | Riffing on |
+| ID | Caption (approved 2026-10-11 as v0.1 placeholders; Chatterbox voices since 2026-10-12, ElevenLabs takes planned) | Riffing on |
 |---|---|---|
 | `pt:anthropic-trust` | "If Anthropic don't trust you, I'm gon' shoot you" | Metro Boomin |
 | `pt:just-merged` | "Oh Lord, Claude just merged another one" | Jetsonmade |
@@ -603,7 +603,7 @@ The atoms are declared in `register.tsx`, the one file that reads and writes the
 
 ## 11. Default tag generation (`tools/generate-tags`)
 
-Python 3, standard library only. Randomness is seeded so the committed WAVs can be reproduced exactly.
+Python 3. `generate.py`, the smoke test and the unit tests use the standard library only; `mix.py` needs numpy, scipy and pedalboard (`requirements-mix.txt`). Randomness is seeded so the committed WAVs can be reproduced exactly.
 
 **`tags.json`** entries have the shape `{ id, text, riff, trigger, preset }`.
 
@@ -614,11 +614,12 @@ Python 3, standard library only. Randomness is seeded so the committed WAVs can 
   - Calls `SetOutputToWaveFile(path, new SpeechAudioFormatInfo(22050, Sixteen, Mono))`.
   - On WSL, the output path is converted to a Windows path.
 - **`say`** (macOS): `say --file-format=WAVE --data-format=LEI16@22050 -o`.
-- **`elevenlabs`:** a stub for later that exits with "not implemented yet". The real backend will read its API key from the environment.
+
+**Recorded takes** (the shipped voices since 2026-10-12): voices are generated outside the repo with any tool (Chatterbox now, ElevenLabs next) and committed as raw takes in `takes/<id>.wav`. `mix.py` mixes each take with pedalboard, using its preset: a tempo-keeping pitch drop, compression, parallel saturation, an octave-down layer, detuned stereo doubles, ping-pong echoes of the last word, reverb, a reverse-reverb swell (`tag`, `dark`), a riser (`hype`) and an 808. Leading and trailing silence is trimmed, so each tag is as long as its line. Then `generate.py --catalog-only` rebuilds the catalog without rendering anything.
 
 **Effects**
 
-Presets are chains of these effects:
+The system-voice path (`sapi`, `say`) uses presets built from these effects:
 
 - pitch shift by resampling
 - delay echo on the last word
@@ -631,7 +632,7 @@ Every output is then normalized to a −1 dBFS peak and given 10 ms fades.
 
 **Output**
 
-- 22.05 kHz, 16-bit mono WAV, written to `plugin/sounds/`.
+- 16-bit WAV written to `plugin/sounds/`: 44.1 kHz stereo from `mix.py`, 22.05 kHz mono from the system-voice path and for the effects.
 - The generator also writes `plugin/hooks/catalog.ts` (`durationMs` plus 64 peaks per sound).
 - The WAVs are committed.
 
@@ -724,5 +725,5 @@ Resolved by reading the API and running `claude plugin validate` and `claude plu
 | R4 Pointer and hover | yes, on the main screen | pending (mac) | Fader and badge hover card stay; no "R4 no" edits |
 | R5 `/mute` | registered with `immediate: true` | — | `/tags-mute` stays as the fallback only |
 | R6 CI without credentials | yes: validate and test pass with an empty `HOME` (`test` exits 1 when no test files exist) | — | CI plugin job keeps `continue-on-error: false` |
-| R7 SAPI quality | approved by the user as placeholders (Microsoft David Desktop, SAPI) | — | Ship v0.1 with these; improving the voices and lines is the next step after merge |
+| R7 SAPI quality | approved by the user as placeholders (Microsoft David Desktop, SAPI); replaced 2026-10-12 by Chatterbox takes mixed with `mix.py` | — | Ship the Chatterbox takes for now; the user plans ElevenLabs takes next |
 | Quiet git commands | `git commit --allow-empty -q` gives `gitOperation` null and empty stdout; the same without `-q` gives `{commit:{sha,kind,branch}}` (Claude Code 2.1.296) | — | Quiet-flag fallback in `triggers.ts` (§4.2) |
