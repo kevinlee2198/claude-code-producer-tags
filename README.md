@@ -1,65 +1,84 @@
+<div align="center">
+
+<img src="docs/assets/banner.svg" alt="Producer Tags for Claude Code: an equalizer bounces and the caption &quot;If Anthropic don't trust you, I'm gon' shoot you&quot; lights up word by word over a waveform" width="1280" />
+
 # Producer Tags for Claude Code
 
-Claude commits. *"If Anthropic don't trust you, I'm gon' shoot you."*
+**Claude commits. Claude gets a producer tag.**
 
-Producer Tags is a Claude Code mod that drops a parody producer tag when Claude does something worth a tag: committing, pushing, merging, getting the tests green, switching models, or signing off.
+[![CI](https://github.com/kevinlee2198/claude-code-producer-tags/actions/workflows/ci.yml/badge.svg)](https://github.com/kevinlee2198/claude-code-producer-tags/actions/workflows/ci.yml)
+[![MIT license](https://img.shields.io/badge/license-MIT-f4c430?style=flat-square)](LICENSE)
+[![Claude Code 2.1.296](https://img.shields.io/badge/Claude_Code-2.1.296-F0884F?style=flat-square)](https://claude.com/claude-code)
+[![Platforms](https://img.shields.io/badge/macOS_·_Linux_·_Windows%2FWSL-444?style=flat-square)](#faq)
 
-> Unofficial parody fan project. Not affiliated with or endorsed by Anthropic or any producer or artist.
+[Quick start](#quick-start) · [The tags](#the-tags) · [Make it yours](#make-it-yours) · [FAQ](#faq) · [Contributing](CONTRIBUTING.md)
 
-## Install
+<code>/plugin install producer-tags --marketplace kevinlee2198/claude-code-producer-tags</code>
 
-In a Claude Code terminal session:
+</div>
 
-```
-/plugin install producer-tags --marketplace kevinlee2198/claude-code-producer-tags
-```
+---
 
-Answer `y` to add the marketplace, then pick a scope (user scope is the usual choice). The tags are live at once.
+Producer Tags is a Claude Code mod that drops a parody producer tag when Claude does something worth a tag: committing, pushing, merging, getting the tests green, switching models, or signing off. A now-playing band lights up the caption while it plays, and the tool row that earned it gets a badge you can click to replay.
 
-## Use
+> Unofficial parody fan project. Not affiliated with or endorsed by Anthropic or any producer or artist. The tags are original lines in a synthesized voice; no audio from real tags is used.
 
-- `/tags` opens the pane:
-  - turn triggers on or off
-  - pick each trigger's sound, preview it (▶) and see its waveform
-  - set the volume or mute
-  - add custom triggers
-  - import your own sounds
-  - play pads `1`–`9`
-- `/mute` mutes or unmutes everything, even mid-turn. If another plugin already owns `/mute`, it is `/tags-mute`. Mute is remembered across sessions.
+## Quick start
 
-### Triggers
+1. In a Claude Code terminal session, run:
+
+   ```
+   /plugin install producer-tags --marketplace kevinlee2198/claude-code-producer-tags
+   ```
+
+   Answer `y` to add the marketplace, then pick a scope (user scope is the usual choice). The tags are live at once.
+
+2. Ask Claude to commit something:
+
+   ```text
+   Commit what we have so far.
+   ```
+
+   The commit tag plays, and the band shows the caption as it goes.
+
+3. Type `/tags` to change sounds, volume and triggers, or `/mute` to silence everything, even mid-turn.
+
+## The tags
+
+Each tag links to its WAV, so you can hear it before you install.
 
 | Trigger | When | Default | Tag |
 |---|---|---|---|
-| git commit | Claude Code reports a commit (amends and cherry-picks too) | on | "If Anthropic don't trust you, I'm gon' shoot you" |
-| git merge | a merge, or `gh pr merge` completing (not `--auto`) | on | "Oh Lord, Claude just merged another one" |
-| git push | a push | on | "Claude Code, you did it again" |
-| tests pass | a known test runner finishes green | on | "We got tests passin' on the track" |
-| → Opus | you switch to a different model family | on | "Yo Opus, you wanna come out here?" |
-| → Fable | same | on | "Fable on the beat, so it's a banger" |
-| → Sonnet | same | on | "Sonnet in the booth, write it down" |
-| → Haiku | same | on | "Haiku on the beat, make it quick" |
-| → other model | you switch to a model outside those families | on | "Who let this model on the track?" |
-| exit | you leave Claude Code (`/exit`, ctrl+c, ctrl+d) or log out | on | "Claude outta here" |
-| session start | a session starts or resumes | off | "Claude Code, Claude Code, Claude Code-ah" |
-| turn done | Claude finishes a reply | off | "Another one" |
-| command fails | a Bash command errors | off | "Tay Keith, fix this" |
+| git commit | Claude Code reports a commit (amends and cherry-picks too) | on | [“If Anthropic don't trust you, I'm gon' shoot you”](plugin/sounds/anthropic-trust.wav) |
+| git merge | a merge, or `gh pr merge` completing (not `--auto`) | on | [“Oh Lord, Claude just merged another one”](plugin/sounds/just-merged.wav) |
+| git push | a push | on | [“Claude Code, you did it again”](plugin/sounds/did-it-again.wav) |
+| tests pass | a known test runner finishes green | on | [“We got tests passin' on the track”](plugin/sounds/tests-passin.wav) |
+| → Opus | you switch to a different model family | on | [“Yo Opus, you wanna come out here?”](plugin/sounds/opus-come-out.wav) |
+| → Fable | same | on | [“Fable on the beat, so it's a banger”](plugin/sounds/fable-on-beat.wav) |
+| → Sonnet | same | on | [“Sonnet in the booth, write it down”](plugin/sounds/sonnet-booth.wav) |
+| → Haiku | same | on | [“Haiku on the beat, make it quick”](plugin/sounds/haiku-quick.wav) |
+| → other model | you switch to a model outside those families | on | [“Who let this model on the track?”](plugin/sounds/who-let-model.wav) |
+| exit | you leave Claude Code (`/exit`, ctrl+c, ctrl+d) or log out | on | [“Claude outta here”](plugin/sounds/claude-outta.wav) |
+| session start | a session starts or resumes | off | [“Claude Code, Claude Code, Claude Code-ah”](plugin/sounds/khaled-claude.wav) |
+| turn done | Claude finishes a reply | off | [“Another one”](plugin/sounds/another-one.wav) |
+| command fails | a Bash command errors | off | [“Tay Keith, fix this”](plugin/sounds/tay-keith-fix.wav) |
 
-**Rules for when a tag plays:**
-- One tag plays per event; the biggest moment wins: merge, then push, then commit, then tests, then fail.
-- Each trigger rests 30 s before it can fire again.
-- A tag that fires while another is playing is skipped, not queued.
+One tag plays per event, and the biggest moment wins: merge, then push, then commit, then tests, then fail. Each trigger rests 30 s before it can fire again, and a tag that fires while another is playing is skipped, not queued.
 
-**What does not fire a tag:**
-- commands running in the background, or that hit their timeout
-- interrupted commands
-- tool calls made by other plugins
+## Make it yours
 
-Commands run by subagents do fire tags.
+`/tags` opens the pane, where you can:
+- turn triggers on or off
+- pick each trigger's sound, preview it (▶) and see its waveform
+- set the volume or mute
+- add custom triggers
+- import your own sounds
+- play pads `1`–`9`
 
-Quiet git commands (`git commit -q`, `git push -q`) still fire tags, through a fallback: Claude Code's own git detection reads git's output, and `-q` silences it. A quiet push that was already up to date may still play.
+`/mute` mutes or unmutes everything, even mid-turn. If another plugin already owns `/mute`, it is `/tags-mute`. Mute is remembered across sessions.
 
-### Custom triggers
+<details>
+<summary><strong>Custom triggers</strong></summary>
 
 In `/tags`, under **Custom**, press **+ Add** and enter a pattern:
 - **Pattern:** a regular expression without slashes, case-insensitive, matched anywhere in the Bash command, for example `docker compose up`. It's matched with a linear-time engine, so no pattern can hang Claude Code; backreferences and lookarounds aren't supported.
@@ -67,7 +86,10 @@ In `/tags`, under **Custom**, press **+ Add** and enter a pattern:
 - **Limits:** up to 20 custom triggers. A custom trigger wins over the built-in ones.
 - **Heredocs:** text inside heredocs (such as commit messages) is ignored, so `deploy` won't fire because a commit message mentions deploying.
 
-### Your own sounds
+</details>
+
+<details>
+<summary><strong>Your own sounds</strong></summary>
 
 Under **Import**, paste a file path (`~` works, as do paths your terminal pastes in quotes or with escaped spaces) and press **Import**.
 
@@ -83,7 +105,12 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
 - **Storage:** the file is copied to `~/.claude/producer-tags/sounds/` (or under `CLAUDE_CONFIG_DIR`), so moving the original does no harm.
 - **Removing:** removing an import deletes that copy and puts any trigger using it back on its default (custom triggers that used it get the 808 boom).
 
-## Platforms
+</details>
+
+## FAQ
+
+<details>
+<summary><strong>Which platforms does it run on?</strong></summary>
 
 | Tier | Platform | How it plays |
 |---|---|---|
@@ -91,17 +118,56 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
 | 2 | Linux | the first of `pw-play`, `paplay`, `ffplay`, `aplay`; with none, tags show as captions only |
 | 3 | Windows, WSL | PowerShell (WPF MediaPlayer) |
 
-## Known limitations
+Native Windows (not WSL) is untested. If Claude Code runs commands through a PowerShell tool there, Bash triggers may not fire.
 
-- **Exit outro:** it plays from a detached process and is best-effort. It works on WSL; macOS is unverified, and if your system kills child processes on exit you may not hear it.
-- **Native Windows (not WSL):** untested. If Claude Code runs commands through a PowerShell tool there, Bash triggers may not fire.
-- **Band timing:** the band and captions are timed from when playback starts. On Windows and WSL, playback waits for the file to open, which can take up to about 1.5 s on a cold start, so the band appears a moment after the command finishes.
-- **Badge replay:** clicking the ▶ on a transcript badge needs Claude Code's fullscreen mode. The pane's ▶ works everywhere.
-- **Several sessions:** with more than one Claude Code session open, the last settings change wins.
+</details>
 
-## Privacy
+<details>
+<summary><strong>Why didn't a tag play?</strong></summary>
 
-No network access and no telemetry. Patterns only ever run against command text on your machine.
+- The trigger fired less than 30 s ago, or another tag was still playing.
+- The trigger is off in `/tags`, or everything is muted.
+- The command ran in the background, hit its timeout, or was interrupted.
+- The tool call came from another plugin. (Commands run by subagents do fire tags.)
+
+Quiet git commands (`git commit -q`, `git push -q`) still fire tags, through a fallback: Claude Code's own git detection reads git's output, and `-q` silences it. A quiet push that was already up to date may still play.
+
+</details>
+
+<details>
+<summary><strong>I didn't hear the exit outro.</strong></summary>
+
+It plays from a detached process and is best-effort. It works on WSL; macOS is unverified, and if your system kills child processes on exit you may not hear it.
+
+</details>
+
+<details>
+<summary><strong>Why does the band show up late on Windows?</strong></summary>
+
+The band and captions are timed from when playback starts. On Windows and WSL, playback waits for the file to open, which can take up to about 1.5 s on a cold start, so the band appears a moment after the command finishes.
+
+</details>
+
+<details>
+<summary><strong>Clicking ▶ on a badge does nothing.</strong></summary>
+
+Badge replay needs Claude Code's fullscreen mode. The pane's ▶ works everywhere.
+
+</details>
+
+<details>
+<summary><strong>I have several sessions open and my settings changed.</strong></summary>
+
+With more than one Claude Code session open, the last settings change wins.
+
+</details>
+
+<details>
+<summary><strong>Does it send anything anywhere?</strong></summary>
+
+No. There's no network access and no telemetry. Patterns only ever run against command text on your machine.
+
+</details>
 
 ## Credits
 
@@ -109,32 +175,8 @@ The idea came from [@fenzoai](https://www.instagram.com/fenzoai/) on Instagram.
 
 ## Contributing
 
-```bash
-npm install                      # TypeScript for type-checking only
-npm run typecheck                # tsc against typings/claude-code.d.ts (Claude Code 2.1.296)
-npm test                         # claude plugin test plugin
-npm run validate                 # claude plugin validate plugin
-python3 -I -m unittest discover -s tools/generate-tags -p 'test_*.py'
-python3 -I tools/generate-tags/smoke_test.py
-```
+Bug reports and pull requests are welcome. See [CONTRIBUTING.md](CONTRIBUTING.md) for setup, checks, regenerating the tags and the release checklist, and [ROADMAP.md](docs/ROADMAP.md) for what might come next.
 
-- **Running from your checkout:** `claude --plugin-dir ./plugin`.
+## License
 
-**Regenerating the default tags.** The voices are recorded outside the repo (currently with [Chatterbox](https://github.com/resemble-ai/chatterbox)) and kept as raw takes in `tools/generate-tags/takes/<id>.wav`. To change one:
-
-1. Put a 16-bit WAV of the new line at `tools/generate-tags/takes/<id>.wav`. Any sample rate works; convert with `ffmpeg -i in.mp3 -c:a pcm_s16le takes/<id>.wav`.
-2. Mix it: `pip install -r tools/generate-tags/requirements-mix.txt`, then `python3 -I tools/generate-tags/mix.py --only <id>`. The mix uses the tag's `preset` in `tags.json`.
-3. Rebuild the catalog: `python3 -I tools/generate-tags/generate.py --catalog-only`.
-4. Commit the take, the WAV in `plugin/sounds/` and `plugin/hooks/catalog.ts`.
-
-`generate.py` without `--catalog-only` re-renders everything with the old system-voice path (`--voice sapi` on Windows or WSL, `--voice say` on macOS), which overwrites the mixed tags.
-
-**Manual checklist before a release.** Do this on macOS and Linux; Windows is best-effort.
-- Each default-on trigger plays: commit, push, merge, tests (direct and `| tail`), each model switch, `/exit`.
-- `/mute` mid-clip stops the sound.
-- Import a wav and an mp3, preview them, assign one, then delete it.
-- The band's equalizer moves and the caption lights up.
-- The badge shows on a commit row, and its hover card shows when hovered.
-- The fader drags (and in fullscreen mode).
-- Pads `1`–`9` play, and digits typed into the pane's text fields stay in the field.
-- Hot reload: with `claude --plugin-dir ./plugin`, save any file under `plugin/hooks/` while a tag plays. The band clears by the clip's deadline, the next commit plays its tag, and the pane's buttons still work.
+[MIT](LICENSE)
