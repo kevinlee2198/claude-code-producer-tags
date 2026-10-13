@@ -18,4 +18,5 @@ First release.
 - Now-playing band with an equalizer and lit-up captions.
 - Badges on tagged tool rows, with replay.
 - `/mute` (or `/tags-mute` when `/mute` is taken), which works mid-turn.
+- Default voice tags are Chatterbox takes, mixed in stereo with a pitch-dropped, saturated vocal, echo throws on the last word, reverb and an 808, and trimmed to the length of each line.
 - Platforms: macOS (tier 1), Linux with PipeWire, PulseAudio, ffplay or aplay (tier 2), Windows and WSL via PowerShell (tier 3).

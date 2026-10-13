@@ -4,8 +4,8 @@ from __future__ import annotations
 from typing import Callable
 from pathlib import Path
 
-from . import elevenlabs, sapi, say
+from . import sapi, say
 
 Backend = Callable[[str, Path], None]
 
-BACKENDS: dict[str, Backend] = {'sapi': sapi.render, 'say': say.render, 'elevenlabs': elevenlabs.render}
+BACKENDS: dict[str, Backend] = {'sapi': sapi.render, 'say': say.render}

@@ -1,6 +1,7 @@
 """Renders Producer Tags' default sounds and the plugin's hooks/catalog.ts.
 
 python3 -I tools/generate-tags/generate.py [--voice sapi|say] [--only <id> ...]
+python3 -I tools/generate-tags/generate.py --catalog-only   # after mix.py, or after copying in WAVs
 """
 from __future__ import annotations
 
@@ -76,15 +77,7 @@ def write_catalog(entries: list[dict]) -> None:
     CATALOG.write_text('\n'.join(lines), encoding='utf-8')
 
 
-def main(argv: list[str] | None = None) -> None:
-    parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument('--voice', default='sapi', choices=sorted(voices.BACKENDS))
-    parser.add_argument('--only', action='append', help='render just these ids (the catalog is always rebuilt)')
-    args = parser.parse_args(argv)
-    spec = json.loads((HERE / 'tags.json').read_text(encoding='utf-8'))
-    render = voices.BACKENDS[args.voice]
-    wanted = set(args.only or [])
-
+def render_sounds(spec: dict, render: voices.Backend, wanted: set[str]) -> None:
     with tempfile.TemporaryDirectory() as tmp:
         for tag in spec['tags']:
             if wanted and tag['id'] not in wanted:
@@ -100,6 +93,18 @@ def main(argv: list[str] | None = None) -> None:
         random.seed(f"{spec['seed']}:{item['id']}")
         audio.write_wav(SOUNDS / f"{item['id']}.wav", finish(effect(item['kind'])))
         print(f"rendered {item['id']}")
+
+
+def main(argv: list[str] | None = None) -> None:
+    parser = argparse.ArgumentParser(description=__doc__)
+    parser.add_argument('--voice', default='sapi', choices=sorted(voices.BACKENDS))
+    parser.add_argument('--only', action='append', help='render just these ids (the catalog is always rebuilt)')
+    parser.add_argument('--catalog-only', action='store_true', help='render nothing; rebuild catalog.ts from plugin/sounds')
+    args = parser.parse_args(argv)
+    spec = json.loads((HERE / 'tags.json').read_text(encoding='utf-8'))
+    wanted = set(args.only or [])
+    if not args.catalog_only:
+        render_sounds(spec, voices.BACKENDS[args.voice], wanted)
 
     entries = [entry(t['id'], t['caption'], t['riff'], True) for t in spec['tags']]
     entries += [entry(e['id'], e['caption'], 'studio', False) for e in spec['effects']]

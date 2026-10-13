@@ -1,0 +1,5 @@
+# For mix.py only; generate.py and the tests use the standard library.
+# pedalboard 0.9.25's Linux wheel crashes ("Illegal instruction") on CPUs without AVX-512.
+numpy==1.26.4
+pedalboard==0.9.24
+scipy==1.17.1

@@ -16,4 +16,4 @@ Ideas past v0.1, roughly in the order we expect to build them. None are promised
 - More triggers: context nearly full ("run it back"), compaction, API errors, permission prompts.
 - A `/config` row for picking a tag pack.
 - Ad-libs under Claude's reply when tests pass.
-- Neural-TTS voice packs (the generator already has a backend slot for them).
+- ElevenLabs voice takes for the default tags, mixed with `tools/generate-tags/mix.py`.
