@@ -103,6 +103,10 @@ Under **Import**, paste a file path (`~` works, as do paths your terminal pastes
 
 No network access and no telemetry. Patterns only ever run against command text on your machine.
 
+## Credits
+
+The idea came from [@fenzoai](https://www.instagram.com/fenzoai/) on Instagram.
+
 ## Contributing
 
 ```bash
